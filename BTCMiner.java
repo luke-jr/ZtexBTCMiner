@@ -18,7 +18,6 @@
 
 /* TODO: 
  * longPolling
- * watchdog: firmware reduces clock if no activity is detected
 */ 
  
 
@@ -56,6 +55,8 @@ class ParameterException extends Exception {
 		"    -d <number>       Device Number, see -i\n" +
 		"    -f <ihx file>     Firmware file (required in programming mode)\n" + 
 		"    -i                Print bus info\n" +
+		"Parameters in cluster mode\n"+
+		"    -n <number>       Maximum amount of devices per thread (default: 10)\n"+
 		"Parameters in programming mode\n"+
 		"    -pt <string>      Program devices of the given type (default: program unconfigured devices)\n" +
 		"    -ps <string>      Program devices with the given serial number (default: program unconfigured devices)\n" +
@@ -101,7 +102,7 @@ class IsDummyMinerException extends Exception {
 class BTCMinerThread extends Thread {
     private Vector<BTCMiner> miners = new Vector<BTCMiner>();
     private String busName;
-    private boolean running = false;
+    private PollLoop pollLoop = null;
     
 // ******* constructor *********************************************************
     public BTCMinerThread( String bn ) {
@@ -115,8 +116,7 @@ class BTCMinerThread extends Thread {
 	    m.name = busName + ": " + m.name;
 	}
 
-	if ( !running ) {
-	    running = true;
+	if ( pollLoop==null ) {
 	    BTCMiner.printMsg("Starting mining thread for bus " + busName);
 	    start();
 	}
@@ -129,13 +129,13 @@ class BTCMinerThread extends Thread {
 
 
 // ******* find ****************************************************************
-/*    public boolean find ( int dn ) {
+    public BTCMiner find ( int dn ) {
 	for (int i=0; i<miners.size(); i++ ) {
 	    if ( miners.elementAt(i).ztex().dev().dev().getDevnum() == dn )
-		return true;
+		return miners.elementAt(i);
 	}
-	return false;
-    }*/
+	return null;
+    }
 
 // ******* busName *************************************************************
     public String busName () {
@@ -144,14 +144,20 @@ class BTCMinerThread extends Thread {
 
 // ******* running *************************************************************
     public boolean running () {
-	return running;
+	return pollLoop != null;
     }
 
 // ******* run *****************************************************************
     public void run () {
-	running = true;
-	BTCMiner.pollLoop(miners);
-	running = false;
+	pollLoop = new PollLoop(miners);
+	pollLoop.run();
+	pollLoop = null;
+    }
+
+// ******* printInfo ************************************************************
+    public void printInfo ( ) {
+	if ( pollLoop != null )
+	    pollLoop.printInfo( busName );
     }
 }
 
@@ -160,6 +166,8 @@ class BTCMinerThread extends Thread {
 // ******* BTCMinerCluster *****************************************************
 // *****************************************************************************
 class BTCMinerCluster {
+    public static int maxDevicesPerThread = 10;
+
     private Vector<BTCMinerThread> threads = new Vector<BTCMinerThread>();
     private Vector<BTCMiner> allMiners = new Vector<BTCMiner>();
     
@@ -167,38 +175,14 @@ class BTCMinerCluster {
     public BTCMinerCluster( boolean verbose ) {
 	final long infoInterval = 300000;
     
-	ZtexScanBus1 bus = new ZtexScanBus1( ZtexDevice1.ztexVendorId, ZtexDevice1.ztexProductId, false, false, 1,  null, 10, 0, 1, 0 );
-	if ( bus.numberOfDevices() <= 0 ) {
-	    System.err.println("No devices found. At least one device has to be connected for start-up.");
-	    System.exit(0);
-	} 
-	for (int i=0; i<bus.numberOfDevices(); i++ ) {
-	    try {
-		BTCMiner m = new BTCMiner ( bus.device(i), null, verbose );
-		m.clusterMode = true;
-		add( m );
-		int j = 0;
-		while ( j<allMiners.size() && m.name.compareTo(allMiners.elementAt(j).name)>=0 )
-		  j++;
-		allMiners.insertElementAt(m, j);
-    	    }
-	    catch ( Exception e ) {
-		BTCMiner.printMsg( "Error: "+e.getLocalizedMessage() );
-	    }
-	}
+	scan( verbose );
 	
-	BTCMiner.printMsg("\nSummary: ");
-	for (int i=0; i<threads.size(); i++ )
-	    BTCMiner.printMsg("  Bus " + threads.elementAt(i).busName() + "\t: " + threads.elementAt(i).size() + " devices");
-	BTCMiner.printMsg("  Total  \t: " + allMiners.size() + " devices\n");
-	BTCMiner.printMsg("\nDisconnect all devices or press Ctrl-C for exit\n");
-	
-	long nextInfoTime = 0;
+	long nextInfoTime = new Date().getTime() + 60000;
 	
 	while ( threads.size()>0 ) {
 
 	    try {
-		Thread.sleep( 500 );
+		Thread.sleep( 300 );
 	    }
 	    catch ( InterruptedException e) {
 	    }
@@ -210,9 +194,12 @@ class BTCMinerCluster {
 		double d = 0.0;
 		for ( int i=0; i<allMiners.size(); i++ ) {
 		    allMiners.elementAt(i).printInfo( true );
-		    d+=allMiners.elementAt(i).measuredHashRate();
+		    d+=allMiners.elementAt(i).submittedHashRate();
 		}
-		BTCMiner.printMsg("Total measured hash rate: " + String.format("%.1f",  d ) + "MH/s");
+		for ( int i=0; i<threads.size(); i++ )
+		    threads.elementAt(i).printInfo();
+		
+		BTCMiner.printMsg("Total submitted hash rate: " + String.format("%.1f",  d ) + "MH/s");
 		BTCMiner.printMsg(" -------- ");
 		nextInfoTime = new Date().getTime() + infoInterval;
 	    }
@@ -224,21 +211,104 @@ class BTCMinerCluster {
     		    threads.removeElementAt(i);
     		}
 	    }
+	    
+	    try {
+		int i=0;
+		while ( System.in.available() > 0 ) {
+		    int j = System.in.read();
+		    if (j>=32) 
+			i=j;
+		}
+		if ( i == 114 )
+		    scan( verbose );
+	    }
+	    catch ( Exception e ) {
+	    }
 
 	}
     }
     
-// ******* add **********************************************************************
+// ******* add *****************************************************************
     private void add ( BTCMiner m ) {
-	String bn = m.ztex().dev().dev().getBus().getDirname();
-	int i=0;
-	while ( i<threads.size() && !bn.equalsIgnoreCase( threads.elementAt(i).busName() ) )
-	    i++;
+	int i=0, j=0;
+	String bn = m.ztex().dev().dev().getBus().getDirname() + "-" + j;
+	while ( i<threads.size() ) {
+	    BTCMinerThread t = threads.elementAt(i);
+	    if ( bn.equalsIgnoreCase(threads.elementAt(i).busName()) ) {
+		if ( t.size() < maxDevicesPerThread )
+		    break;
+		j++;
+		i=0;
+		bn = m.ztex().dev().dev().getBus().getDirname() + "-" + j;
+	    }
+	    else {
+		i++;
+	    }
+	}
 
 	if ( i >= threads.size() )
 	    threads.add( new BTCMinerThread(bn) );
 	threads.elementAt(i).add(m);
     }
+
+// ******* find ****************************************************************
+    private BTCMiner find ( ZtexDevice1 dev ) {
+	int dn = dev.dev().getDevnum();
+	String bn = dev.dev().getBus().getDirname();
+	for ( int i=threads.size()-1; i>=0; i-- )  {
+	    BTCMiner m = threads.elementAt(i).find(dn);
+	    if (  m != null && bn.equals(m.ztex().dev().dev().getBus().getDirname()) )
+		return m;
+	}
+	return null;
+    }
+
+// ******* scan ****************************************************************
+    private void scan ( boolean verbose ) {
+	allMiners.clear();
+
+	BTCMiner.printMsg("\n(Re)Scanning bus ... ");
+
+	PollLoop.scanMode = true;
+
+	ZtexScanBus1 bus = new ZtexScanBus1( ZtexDevice1.ztexVendorId, ZtexDevice1.ztexProductId, false, false, 1,  null, 10, 0, 1, 0 );
+	if ( bus.numberOfDevices() <= 0 ) {
+	    System.err.println("No devices found. At least one device has to be connected.");
+	    System.exit(0);
+	} 
+	for (int i=0; i<bus.numberOfDevices(); i++ ) {
+	    try {
+		BTCMiner m = find( bus.device(i) );
+		if ( m == null ) {
+		    m = new BTCMiner ( bus.device(i), null, verbose );
+		    m.clusterMode = true;
+		    add( m );
+		    BTCMiner.printMsg(m.name + ": added");
+		}
+		else {
+		    BTCMiner.printMsg(m.name + ": already running");
+		    m.setFreq(m.freqM);
+		}
+		
+		int j = 0;
+		while ( j<allMiners.size() && m.name.compareTo(allMiners.elementAt(j).name)>=0 )
+		  j++;
+		allMiners.insertElementAt(m, j);
+    	    }
+	    catch ( Exception e ) {
+		BTCMiner.printMsg( "Error: "+e.getLocalizedMessage() );
+	    }
+	}
+	
+	PollLoop.scanMode = false;
+	
+	BTCMiner.printMsg("\nSummary: ");
+	for (int i=0; i<threads.size(); i++ )
+	    BTCMiner.printMsg("  Bus " + threads.elementAt(i).busName() + "\t: " + threads.elementAt(i).size() + " devices");
+	BTCMiner.printMsg("  Total  \t: " + allMiners.size() + " devices\n");
+	BTCMiner.printMsg("\nDisconnect all devices or press Ctrl-C for exit.\nPress \"r\" Enter for re-scanning.\n");
+    }
+
 }
 
 
@@ -255,6 +325,105 @@ class LogString {
     }
 }
 
+
+// *****************************************************************************
+// ******* PollLoop ************************************************************
+// *****************************************************************************
+class PollLoop {
+    public static boolean scanMode = false;
+
+    private double usbTime = 0.0;
+    private double networkTime = 0.0;
+    private double timeW = 1e-6;
+    private Vector<BTCMiner> v;
+    public static final long minQueryInterval = 250;
+
+// ******* constructor *********************************************************
+    public PollLoop ( Vector<BTCMiner> pv ) {
+	v = pv;
+    }
+	
+// ******* run *****************************************************************
+    public void run ( ) {
+	while ( v.size()>0 ) {
+	    long t0 = new Date().getTime();
+
+	    if ( ! scanMode ) {
+		long tn = 0;
+		
+		synchronized ( v ) {
+		    for ( int i=v.size()-1; i>=0; i-- ) {
+			BTCMiner m = v.elementAt(i);
+			m.networkTime = 0;
+			long t = new Date().getTime();
+	    		if ( m.disableTime < t ) {
+			    try { 
+				if ( /*m.updateCnt<updateImmediately ||*/ m.checkUpdate() ) {
+				    m.getWork();  // calls getNonces
+				    // m.updateCnt = updateImmediately;
+				    m.dmsg("Got new work");
+				    m.sendData();
+				}
+				else {
+				    m.getNonces();
+				}
+				m.updateFreq();
+				m.printInfo(false);
+			    }
+			    catch ( UsbException e ) {
+    				m.msg("Error: "+e.getLocalizedMessage()+": Disabeling device");
+    				m.fatalError = "Error: "+e.getLocalizedMessage()+": Device disabled since " + BTCMiner.dateFormat.format( new Date() );
+    				v.removeElementAt(i);
+			    }
+			    catch ( Exception e ) {
+    				m.msg("Error: "+e.getLocalizedMessage() +": Disabeling miner for 60s");
+    				m.disableTime = new Date().getTime() + 60000;
+    			    }
+    			}
+    			tn += m.networkTime;
+    		    }
+		}
+
+		t0 = new Date().getTime() - t0;
+		usbTime = usbTime * 0.9998 + t0 - tn;
+		networkTime = networkTime * 0.9998 + tn;
+		timeW = timeW * 0.9998 + 1;
+	    }
+	    
+
+	    t0 = minQueryInterval - t0;
+	    if ( t0 > 5 ) {
+		try {
+		    Thread.sleep( t0 );
+		}
+		catch ( InterruptedException e) {
+		}	 
+	    }
+	}
+    }
+
+// ******* printInfo ***********************************************************
+    public void printInfo( String name ) {
+	int oc = 0;
+	double gt=0.0, gtw=0.0, st=0.0, stw=0.0;
+	for ( int i=v.size()-1; i>=0; i-- ) {
+	    BTCMiner m = v.elementAt(i);
+	    oc += m.overflowCount;
+	    m.overflowCount = 0;
+	    
+	    st += m.submitTime;
+	    stw += m.submitTimeW;
+	    
+	    gt += m.getTime;
+	    gtw += m.getTimeW;
+	}
+	    
+	BTCMiner.printMsg(name + ": poll loop time: " + Math.round((usbTime+networkTime)/timeW) + "ms (USB: " + Math.round(usbTime/timeW) + "ms network: " + Math.round(networkTime/timeW) + "ms)   getwork time: " 
+		+  Math.round(gt/gtw) + "ms  submit time: " +  Math.round(st/stw) + "ms" );
+	if ( oc > 0 )
+	    BTCMiner.printMsg( name + ": Warning: " + oc + " overflows occured. This is usually caused by a slow network connection." );
+    }
+}
 
 // *****************************************************************************
 // *****************************************************************************
@@ -419,9 +588,11 @@ class BTCMiner {
 	    throw new ParserException( "jsonParse: Parameter `"+parameter+"' not found" );
 	while ( i<response.length() && response.charAt(i) != ':' )
 	    i++;
+	i+=1;
+	while ( i<response.length() && (byte)response.charAt(i) <= 32 )
+	    i++;
 	if ( i>=response.length() )
 	    throw new ParserException( "jsonParse: Value expected after `"+parameter+"'" );
-	i+=1;
 	int j=i;
 	if ( i<response.length() && response.charAt(i)=='"' ) {
 	    i+=1;
@@ -479,11 +650,11 @@ class BTCMiner {
 // ******* non-static methods **************************************************
 // *****************************************************************************
     private Ztex1v1 ztex = null;
-    private int numNonces, offsNonces, freqM, freqMDefault, freqMaxM;
+    public int numNonces, offsNonces, freqM, freqMDefault, freqMaxM;
     private double freqM1;
     private String bitFileName = null;
     public String name;
-    private String fatalError = null;
+    public String fatalError = null;
     
     public boolean verbose = false;
     public boolean clusterMode = false;
@@ -500,13 +671,19 @@ class BTCMiner {
     
     MessageDigest digest = null;
     
-    public int[] lastGoldenNonces = { 0, 0, 0, 0, 0, 0 };
-    public int goldenNonce, nonce, hash7;
+    public int[] lastGoldenNonces = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    public int[] goldenNonce, nonce, hash7;
     public int submittedCount = 0,  totalSubmittedCount = 0;
     public long startTime;
     
+    public int overflowCount = 0;
+    public long networkTime = 0;
+    public double getTime = 0.0; 
+    public double getTimeW = 1e-6; 
+    public double submitTime = 0.0; 
+    public double submitTimeW = 1e-6; 
+    
     public long maxPollInterval = 20000;
-    public static final long minQueryInterval = 250;
     public long infoInterval = 15000;
     
     public long disableTime = 0;
@@ -516,8 +693,10 @@ class BTCMiner {
         
     public double[] errorCount = new double[256];
     public double[] errorWeight = new double[256];
+    public double[] errorRate = new double[256];
     public double[] maxErrorRate = new double[256];
     public final double maxMaxErrorRate = 0.1;
+    public final double errorHysteresis = 0.1; // in frequency steps
 
 // ******* BTCMiner ************************************************************
 // constructor
@@ -546,11 +725,15 @@ class BTCMiner {
 	catch ( IsDummyMinerException e ) { // will never occur here
 	}
 	
+	goldenNonce = new int[numNonces];
+	nonce = new int[numNonces];
+	hash7 = new int[numNonces];
+	
 	name = bitFileName+"-"+ztex.dev().snString();
     	msg( "New device: "+ descriptorInfo() );
     	
-    	long d = Math.round( 2500.0 / (freqM1 * (freqMaxM+1) * numNonces) * 1000.0 );
-    	if ( d < maxPollInterval ) maxPollInterval=d;
+//    	long d = Math.round( 2500.0 / (freqM1 * (freqMaxM+1) * numNonces) * 1000.0 );
+//    	if ( d < maxPollInterval ) maxPollInterval=d;
 
     	try {
 	    msg("FPGA configuration time: " + ztex.configureFpga( "fpga/"+bitFileName+".bit" , true, 2 ) + " ms");
@@ -574,6 +757,7 @@ class BTCMiner {
 	for (int i=0; i<255; i++) {
 	    errorCount[i] = 0;
 	    errorWeight[i] = 0;
+	    errorRate[i] = 0;
 	    maxErrorRate[i] = 0;
 	}
 	
@@ -638,12 +822,14 @@ class BTCMiner {
         con.setUseCaches(false);
         con.setDoInput(true);
         con.setDoOutput(true);
+        
 
         // Send request
         OutputStreamWriter wr = new OutputStreamWriter ( con.getOutputStream ());
         wr.write(request);
         wr.flush();
         wr.close();
+
 
         // read response header
         String rejectReason = con.getHeaderField("X-Reject-Reason");
@@ -672,6 +858,7 @@ class BTCMiner {
         con.disconnect();
 
         return response.toString();
+
     }
 
 // ******* bitcoinRequest ******************************************************
@@ -682,8 +869,16 @@ class BTCMiner {
 
 // ******* getWork *************************************************************
     public void getWork() throws UsbException, IsDummyMinerException, MalformedURLException, IOException, ParserException {
+
+	long t = new Date().getTime();
 	String response = bitcoinRequest("getwork","" );
+	t = new Date().getTime() - t;
+	getTime = getTime * 0.99 + t;
+	getTimeW = getTimeW * 0.99 + 1;
+	networkTime += t;
+
 	while ( getNonces() ) {}
+
 	hexStrToData(jsonParse(response,"data"), dataBuf);
 	hexStrToData(jsonParse(response,"midstate"), midstateBuf);
 	initWork();
@@ -692,6 +887,8 @@ class BTCMiner {
 
 // ******* submitWork **********************************************************
     public void submitWork( int n ) throws MalformedURLException, IOException {
+	long t = new Date().getTime();
+
 	for (int i=lastGoldenNonces.length-1; i>0; i-- )
 	    lastGoldenNonces[i]=lastGoldenNonces[i-1];
 	lastGoldenNonces[0] = n;
@@ -713,6 +910,11 @@ class BTCMiner {
 	}
 	if ( err!=null && !err.equals("null") && !err.equals("") ) 
 	    msg( "Error attempting to submit new nonce: " + err );
+
+	t = new Date().getTime() - t;
+	submitTime = submitTime * 0.99 + t;
+	submitTimeW = submitTimeW * 0.99 + 1;
+	networkTime += t;
     }
 
 // ******* initWork **********************************************************
@@ -779,6 +981,8 @@ class BTCMiner {
 	    sendBuf[i+12] = midstateBuf[i];
         ztex.vendorCommand2( 0x80, "Send hash data", 0, 0, sendBuf, 44 );
         ignoreErrorTime = new Date().getTime() + 500; // ignore errors for next 1s
+	for ( int i=0; i<numNonces; i++ ) 
+	    nonce[i] = 0;
         isRunning = true;
     }
 
@@ -799,9 +1003,14 @@ class BTCMiner {
 	    maxM++;
 
 	int bestM=0;
-	for ( int i=1; i<=maxM; i++ ) 
-	    if ( (i+1)*(1-maxErrorRate[i]) > (bestM+1)*(1-maxErrorRate[bestM]) )
+	double bestR=0;
+	for ( int i=0; i<=maxM; i++ )  {
+	    double r = (i + 1 + ( i == freqM ? errorHysteresis : 0))*(1-maxErrorRate[i]);
+	    if ( r > bestR ) {
 		bestM = i;
+		bestR = r;
+	    }
+	}
 	
 	if ( bestM != freqM ) {
 	    freqM = bestM;
@@ -813,27 +1022,24 @@ class BTCMiner {
 // ******* getNonces ***********************************************************
     public boolean getNonces() throws UsbException, IsDummyMinerException, MalformedURLException, IOException {
 	if ( !isRunning ) return false;
-	if ( ztex==null ) throw new IsDummyMinerException();
-
-	byte[] buf = new byte[numNonces*12];
-        ztex.vendorRequest2( 0x81, "Read hash data", 0, 0, buf, numNonces*12 );
+	getNoncesInt();
 	
         if ( ignoreErrorTime < new Date().getTime() ) {
 	    errorCount[freqM] *= 0.995;
     	    errorWeight[freqM] = errorWeight[freqM]*0.995 + 1.0;
             for ( int i=0; i<numNonces; i++ ) {
-        	if ( ! checkNonce( dataToInt(buf,i*12+4) - offsNonces, dataToInt(buf,i*12+8) ) )
+        	if ( ! checkNonce( nonce[i], hash7[i] ) )
     		    errorCount[freqM] +=1.0/numNonces;
     	    }
     	    
-	    double r = errorCount[freqM] / errorWeight[freqM] * Math.min(1.0, errorWeight[freqM]*0.01) ;
-    	    if ( r > maxErrorRate[freqM] )
-    	        maxErrorRate[freqM] = r;
+	    errorRate[freqM] = errorCount[freqM] / errorWeight[freqM] * Math.min(1.0, errorWeight[freqM]*0.01) ;
+    	    if ( errorRate[freqM] > maxErrorRate[freqM] )
+    	        maxErrorRate[freqM] = errorRate[freqM];
     	}
 
 	boolean submitted = false;
         for ( int i=0; i<numNonces; i++ ) {
-    	    int n = dataToInt(buf,i*8) - offsNonces;
+    	    int n = goldenNonce[i];
     	    if ( n != -offsNonces ) {
     		getHash(n);
     		if ( hashBuf[31]==0 && hashBuf[30]==0 && hashBuf[29]==0 && hashBuf[28]==0 ) {
@@ -852,25 +1058,39 @@ class BTCMiner {
         return submitted;
     } 
 
-// ******* getNoncesTest *******************************************************
-    public void getNoncesTest() throws UsbException, IsDummyMinerException {
+// ******* getNoncesInt ********************************************************
+    public void getNoncesInt() throws UsbException, IsDummyMinerException {
 	if ( ztex==null ) throw new IsDummyMinerException();
-	byte[] buf = new byte[12];
-        ztex.vendorRequest2( 0x81, "Read hash data", 0, 0, buf, 12 );
-	goldenNonce = dataToInt(buf,0) - offsNonces;
-	nonce = dataToInt(buf,4) - offsNonces;
-	hash7 = dataToInt(buf,8);
+	byte[] buf = new byte[numNonces*12];
+	boolean overflow = false;
+        ztex.vendorRequest2( 0x81, "Read hash data", 0, 0, buf, numNonces*12 );
+//	System.out.print(dataToHexStr(buf)+"            ");
+        for ( int i=0; i<numNonces; i++ ) {
+	    goldenNonce[i] = dataToInt(buf,i*12+0) - offsNonces;
+	    int j = dataToInt(buf,i*12+4) - offsNonces;
+	    overflow |= ((j >> 4) & 0xfffffff) < ((nonce[i]>>4) & 0xfffffff);
+	    nonce[i] = j;
+	    hash7[i] = dataToInt(buf,i*12+8);
+	}
+	if ( overflow && ! PollLoop.scanMode )
+	    overflowCount += 1;
     }
 
 // ******* checkNonce *******************************************************
     public boolean checkNonce( int n, int h ) throws UsbException, IsDummyMinerException {
-    	getHash(n);
-    	return ( (hashBuf[31] & 255) | ((hashBuf[30] & 255)<<8) | ((hashBuf[29] & 255)<<16) | ((hashBuf[28] & 255)<<24) ) == h + 0x5be0cd19;
+	int offs[] = { 0, 1, -1, 2, -2 };
+//	int offs[] = { 0 };
+	for (int i=0; i<offs.length; i++ ) {
+	    getHash(n + offs[i]);
+	    if ( ( (hashBuf[31] & 255) | ((hashBuf[30] & 255)<<8) | ((hashBuf[29] & 255)<<16) | ((hashBuf[28] & 255)<<24) ) == h + 0x5be0cd19 )
+		return true;
+    	}
+        return false;
     }
 
-// ******* measuredHashRate ***************************************************
-    public double measuredHashRate () {
-	return 4.294967296e6 * totalSubmittedCount / (new Date().getTime()-startTime);
+// ******* submittedHashRate ***************************************************
+    public double submittedHashRate () {
+	return fatalError == null ? 4.294967296e6 * totalSubmittedCount / (new Date().getTime()-startTime) : 0;
     }
     
 // ******* printInfo ***********************************************************
@@ -887,7 +1107,7 @@ class BTCMiner {
 	StringBuffer sb = new StringBuffer( "f=" + String.format("%.2f",(freqM+1)*freqM1)+"MHz" );
 
 	if ( errorWeight[freqM]>20 )
-	    sb.append(",  errorRate="+ String.format("%.2f",errorCount[freqM]/errorWeight[freqM]*100)+"%");
+	    sb.append(",  errorRate="+ String.format("%.2f",errorRate[freqM]*100)+"%");
 
 	if ( errorWeight[freqM]>100.1 || maxErrorRate[freqM]>0.001 )
 	    sb.append(",  maxErrorRate="+ String.format("%.2f",maxErrorRate[freqM]*100)+"%");
@@ -895,7 +1115,7 @@ class BTCMiner {
 	if ( freqM<255 && (errorWeight[freqM+1]>100.1 || maxErrorRate[freqM+1]>0.001 ) )
 	    sb.append(",  nextMaxErrorRate="+ String.format("%.2f",maxErrorRate[freqM+1]*100)+"%");
 	    
-	sb.append(",  submitted " +submittedCount+" new nonces,  measured hash rate " + String.format("%.1f",  measuredHashRate() ) + "MH/s");
+	sb.append(",  submitted " +submittedCount+" new nonces,  submitted hash rate " + String.format("%.1f",  submittedHashRate() ) + "MH/s");
 	submittedCount = 0;
 	
 	printMsg(name + ": " + sb.toString());
@@ -927,61 +1147,22 @@ class BTCMiner {
     	    throw new FirmwareException("Invalid bitstream file name");
     	bitFileName = new String(buf, 8, i-8);
     }
+    
+// ******* checkUpdate **********************************************************
+    public boolean checkUpdate() {
+	long t = new Date().getTime();
+	if ( ignoreErrorTime>t ) return false;
+	if ( lastGetWorkTime + maxPollInterval < t ) return true;
+	for ( int i=0; i<numNonces ; i++ )
+	    if ( nonce[i]<0 ) return true;
+	return false;
+    }
 
 // ******* descriptorInfo ******************************************************
     public String descriptorInfo () {
 	return "bitfile=" + bitFileName + "   f_default=" + String.format("%.2f",freqM1 * (freqMDefault+1)) + "MHz  f_max=" + String.format("%.2f",freqM1 * (freqMaxM+1))+ "MHz";
     }
     
-// *****************************************************************************
-// ******* pollLoop ************************************************************
-// *****************************************************************************
-    public static void pollLoop ( Vector<BTCMiner> v ) {
-	while ( v.size()>0 ) {
-	    long t0 = new Date().getTime();
-
-	    synchronized ( v ) {
-		for ( int i=v.size()-1; i>=0; i-- ) {
-		    BTCMiner m = v.elementAt(i);
-		    long t = new Date().getTime();
-	    	    if ( m.disableTime < t ) {
-			try { 
-			    t = new Date().getTime();
-			    if ( (/*m.updateCnt<updateImmediately ||*/ m.lastGetWorkTime+m.maxPollInterval<t) && m.ignoreErrorTime<t  ) {
-				m.getWork();  // calls getNonces
-				// m.updateCnt = updateImmediately;
-				m.dmsg("Got new work");
-				m.sendData();
-			    }
-			    else {
-				m.getNonces();
-			    }
-			    m.updateFreq();
-			    m.printInfo(false);
-			}
-			catch ( UsbException e ) {
-    			    m.msg("Error: "+e.getLocalizedMessage()+": Disabeling device");
-    			    m.fatalError = "Error: "+e.getLocalizedMessage()+": Device disabled since " + dateFormat.format( new Date() );
-    			    v.removeElementAt(i);
-			}
-			catch ( Exception e ) {
-    			    m.msg("Error: "+e.getLocalizedMessage() +": Disabeling miner for 60s");
-    			    m.disableTime = new Date().getTime() + 60000;
-    			} 
-    		    }
-		}
-	    }
-
-	    t0 += minQueryInterval - new Date().getTime();
-	    if ( t0 > 10 ) {
-		try {
-		    Thread.sleep( t0 );
-		}
-		catch ( InterruptedException e) {
-		}	 
-	    }
-	}
-    }
 
 // *****************************************************************************
 // ******* main ****************************************************************
@@ -1129,9 +1310,21 @@ class BTCMiner {
 		        System.err.println(ParameterException.helpMsg);
 	    	        System.exit(0);
 		}
+	        else if ( args[i].equals("-n") ) {
+	    	    i++;
+		    try {
+			if (i>=args.length) throw new Exception();
+    			 BTCMinerCluster.maxDevicesPerThread = Integer.parseInt( args[i] );
+		    } 
+		    catch (Exception e) {
+		        throw new ParameterException("Number expected after -n");
+		    }
+		}
 		else throw new ParameterException("Invalid Parameter: "+args[i]);
 	    }
 	    
+	    if ( BTCMinerCluster.maxDevicesPerThread < 1 )
+		BTCMinerCluster.maxDevicesPerThread = 127;
 	    
 	    if ( mode != 't' && mode != 'p' ) {
 		if ( rpcuser == null ) {
@@ -1179,15 +1372,21 @@ class BTCMiner {
 			}
 			catch ( InterruptedException e) {
 			}	 
-			miner.getNoncesTest();
-	    		System.out.println( i + ":  " + intToHexStr(miner.nonce) + "    " + miner.checkNonce(miner.nonce,miner.hash7) + "    " + intToHexStr(miner.goldenNonce) + "      "  + dataToHexStr( miner.getHash( miner.goldenNonce) ) );
+			miner.getNoncesInt();
+
+    			miner.getHash(miner.nonce[0]);
+    			for ( int j=0; j<miner.numNonces; j++ ) {
+//    			    byte h7[] = { miner.hashBuf[28], miner.hashBuf[29], miner.hashBuf[30], miner.hashBuf[31] };
+//	    		    System.out.println( i +"-" + j + ":  " + intToHexStr(miner.nonce[j]) + "    " + miner.checkNonce(miner.nonce[j],miner.hash7[j]) + "   " + dataToHexStr( h7 ) + "  " + intToHexStr(miner.hash7[j]+0x5be0cd19) + "    " + intToHexStr(miner.goldenNonce[j]) + "      "  + dataToHexStr( miner.getHash( miner.goldenNonce[j]) ) + "     " + miner.overflowCount);
+	    		    System.out.println( i +"-" + j + ":  " + intToHexStr(miner.nonce[j]) + "    " + miner.checkNonce(miner.nonce[j],miner.hash7[j]) + "    " + intToHexStr(miner.goldenNonce[j]) + "      "  + dataToHexStr( miner.getHash( miner.goldenNonce[j]) ) + "     " + miner.overflowCount);
+	    		}
 		    } 
 		}
 		else { // single mode
 		    System.out.println("\nDisconnect device or press Ctrl-C for exit\n");
 		    Vector<BTCMiner> v = new Vector<BTCMiner>();
 		    v.add ( miner );
-		    pollLoop( v ); 
+		    new PollLoop(v).run(); 
 		}
 	    }
 	    else if ( mode == 'p' ) {

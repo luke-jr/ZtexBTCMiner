@@ -1,5 +1,5 @@
 NET "fxclk_in" TNM_NET = "fxclk_in";
-TIMESPEC "TS_fxclk_in" = PERIOD "fxclk_in" 48MHz HIGH 50 %;
+TIMESPEC "TS_fxclk_in" = PERIOD "fxclk_in" 20.833ns HIGH 50 %;
 NET "fxclk_in"  LOC = "L22" | IOSTANDARD = LVCMOS33 ;
 
 # input
@@ -30,11 +30,11 @@ NET "read<5>"  LOC = "R22" | IOSTANDARD = LVCMOS33 ;  # PD5
 NET "read<6>"  LOC = "P18" | IOSTANDARD = LVCMOS33 ;  # PD6
 NET "read<7>"  LOC = "P19" | IOSTANDARD = LVCMOS33 ;  # PD7
 
-NET "reset"  LOC = "G20" | IOSTANDARD = LVCMOS33 ;    # PC0
-NET "rd_clk"  LOC = "T20" | IOSTANDARD = LVCMOS33 ;   # PC1
+NET "reset"  LOC = "G20" | IOSTANDARD = LVCMOS33 ;     # PC0
+NET "rd_clk"  LOC = "T20" | IOSTANDARD = LVCMOS33 ;    # PC1
+NET "pll_stop"  LOC = "Y5" | IOSTANDARD = LVCMOS33 ;   # PC2
 
 # unused
-#NET ""  LOC = "Y5" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;   # PC2
 #NET ""  LOC = "AB9" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;  # PC3
 #NET ""  LOC = "G19" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;  # PC4
 #NET ""  LOC = "H20" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;  # PC5
@@ -60,6 +60,5 @@ NET "rd_clk"  LOC = "T20" | IOSTANDARD = LVCMOS33 ;   # PC1
 #NET "green16<15>"  LOC = "W12" | IOSTANDARD = LVCMOS33 | DRIVE = 12;
 
 # TIG's
-NET "reset_buf" TIG;
 NET "inbuf[*]" TIG;
 NET "m/golden_nonce[*]" TIG;

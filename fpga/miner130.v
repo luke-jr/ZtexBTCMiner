@@ -1,5 +1,5 @@
 /*!
-   btcminer -- BTCMiner for ZTEX USB-FPGA Modules: HDL code: single hash miner
+   btcminer -- BTCMiner for ZTEX USB-FPGA Modules: HDL code for ZTEX USB-FPGA Module 1.15b (one double hash pipe)
    Copyright (C) 2011 ZTEX GmbH
    http://www.ztex.de
 
@@ -18,7 +18,7 @@
 
 `define IDX(x) (((x)+1)*(32)-1):((x)*(32))
 
-module miner66 (clk, reset,  midstate, data,  golden_nonce, nonce2, hash2);
+module miner130 (clk, reset,  midstate, data,  golden_nonce, nonce2, hash2);
 
 	parameter NONCE_OFFS = 32'd0;
 	parameter NONCE_INCR = 32'd1;
@@ -31,13 +31,15 @@ module miner66 (clk, reset,  midstate, data,  golden_nonce, nonce2, hash2);
 	reg [31:0] nonce;
 	wire [255:0] hash;
 	
-	reg [6:0] cnt = 7'd0;
+	reg [7:0] cnt = 8'd0;
 	reg feedback = 1'b0;
+	reg is_golden_nonce;
+	reg feedback_b1, feedback_b2, feedback_b3, feedback_b4, feedback_b5, feedback_b6, reset_b1, reset_b2;
 
 	reg [255:0] state_buf;
 	reg [511:0] data_buf;
 	
-	sha256_pipe65 p (
+	sha256_pipe129 p (
 		.clk(clk),
 		.state(state_buf),
 		.data(data_buf),
@@ -46,15 +48,15 @@ module miner66 (clk, reset,  midstate, data,  golden_nonce, nonce2, hash2);
 
 	always @ (posedge clk)
 	begin
-		if ( cnt == 7'd65 )
+		if ( cnt == 8'd129 )
 		begin
 		    feedback <= ~feedback;
-		    cnt <= 7'd0;
+		    cnt <= 8'd0;
 		end else begin
-		    cnt <= cnt + 7'd1;
+		    cnt <= cnt + 8'd1;
 		end
 
-		if ( feedback ) 
+		if ( feedback_b1 ) 
 		begin
 		    data_buf <= { 256'h0000010000000000000000000000000000000000000000000000000080000000, 
 		                  hash[`IDX(7)] + midstate[`IDX(7)], 
@@ -66,27 +68,57 @@ module miner66 (clk, reset,  midstate, data,  golden_nonce, nonce2, hash2);
 		                  hash[`IDX(1)] + midstate[`IDX(1)], 
 		                  hash[`IDX(0)] + midstate[`IDX(0)]
 		                };
-		    state_buf <= 256'h5be0cd191f83d9ab9b05688c510e527fa54ff53a3c6ef372bb67ae856a09e667;
-		end else begin 
+		end else begin
 		    data_buf <= {384'h000002800000000000000000000000000000000000000000000000000000000000000000000000000000000080000000, nonce, data};
-		    state_buf <= midstate;
-
-		    hash2 <= hash[255:224];
-		    nonce2 <= nonce;
-		    
-		    if ( reset )
-		    begin
-			nonce <= NONCE_OFFS;
-			golden_nonce <= 32'd0;
-		    end else begin
-			nonce <= nonce + NONCE_INCR;
-			if ( hash2 == 32'ha41f32e7 ) 
-			begin
-			    golden_nonce <= nonce2;
-			end
-		    end
-
 		end
+
+		if ( feedback_b2 ) 
+		begin
+		    state_buf <= 256'h5be0cd191f83d9ab9b05688c510e527fa54ff53a3c6ef372bb67ae856a09e667;
+		end else begin
+		    state_buf <= midstate;
+		end
+
+	        if ( reset_b1 )
+	        begin
+	    	    nonce <= NONCE_OFFS;
+		end else if ( ! feedback_b3 ) 
+		begin
+		    nonce <= nonce + NONCE_INCR;
+		end
+
+		if ( reset_b2 )
+		begin
+		    golden_nonce <= 32'd0;
+	    	end else if ( is_golden_nonce ) 
+	    	begin
+		    golden_nonce <= nonce2;
+		end
+		
+		if ( ! feedback_b4 ) 
+		begin
+		    hash2 <= hash[255:224];
+		end
+		
+		if ( ! feedback_b5 ) 
+		begin
+		    nonce2 <= nonce;
+		end
+
+		if ( ! feedback_b6 ) 
+		begin
+		    is_golden_nonce <= hash[255:224] == 32'ha41f32e7;
+		end
+		
+		feedback_b1 <= feedback;
+		feedback_b2 <= feedback;
+		feedback_b3 <= feedback;
+		feedback_b4 <= feedback;
+		feedback_b5 <= feedback;
+		feedback_b6 <= feedback;
+		
+		reset_b1 <= reset;
+		reset_b2 <= reset;
 	end
 
 endmodule

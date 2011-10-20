@@ -24,13 +24,13 @@
 `define S0(x) ( { {x}[6:4] ^ {x}[17:15], {{x}[3:0], {x}[31:7]} ^ {{x}[14:0],{x}[31:18]} ^ {x}[31:3] } )
 `define S1(x) ( { {x}[16:7] ^ {x}[18:9], {{x}[6:0], {x}[31:17]} ^ {{x}[8:0],{x}[31:19]} ^ {x}[31:10] } )
 
-module sha256_pipe_base ( clk, state, data, out );
+module sha256_pipe2_base ( clk, i_state, i_data, out );
 
 	parameter STAGES = 64;
 	
 	input clk;
-	input [255:0] state;
-	input [511:0] data;
+	input [255:0] i_state;
+	input [511:0] i_data;
 	output [255:0] out;
 
 	localparam Ks = {
@@ -57,56 +57,75 @@ module sha256_pipe_base ( clk, state, data, out );
 	generate
 
     	    for (i = 0; i <= STAGES; i = i + 1) begin : S
-		wire [479:0] w_data;
-		wire [223:0] w_state;
-		wire [31:0] w_t1, w_data14;
 
-		if(i == 0)
-	    	    sha256_stage0 #( 
-	    		    .K_NEXT(Ks[`IDX(63)]),
-			    .STAGES(STAGES)
-	    	    ) I (
-			    .clk(clk),
-			    .i_data(data),
-			    .i_state(state),
-			    .o_data(w_data),
-			    .o_state(w_state),
-			    .o_t1(w_t1),
-			    .o_data14(w_data14)
-		    );
-		else
-		    sha256_stage #( 
-			    .K_NEXT(Ks[`IDX((127-i) & 63)]),
-			    .STAGES(STAGES)
-		    ) I (
-		    	    .clk(clk),
-			    .i_data(S[i-1].w_data),
-			    .i_state(S[i-1].w_state),
-			    .i_t1(S[i-1].w_t1),
-			    .i_data14(S[i-1].w_data14),
-			    .o_data(w_data),
-			    .o_state(w_state),
-			    .o_t1(w_t1),
-			    .o_data14(w_data14)
-		    );
+		reg [511:0] data;
+		reg [223:0] state;
+		reg [31:0] t1_p1;
+
+		if(i == 0) 
+		begin
+
+		    reg [223:0] o_state;
+		    
+		    always @ (posedge clk)
+		    begin
+			data <= i_data;
+			state <= i_state[223:0];
+			t1_p1 <= i_state[`IDX(7)] + i_data[`IDX(0)] + Ks[`IDX(63)];
+		    end
+		    
+		end else
+		begin
+		
+		    reg [511:0] data_buf;
+		    reg [223:0] state_buf;
+		    reg [31:0] data15_p1, data15_p2, data15_p3, t1;
+
+		    always @ (posedge clk)
+		    begin
+			data_buf <= S[i-1].data;
+			data[479:0] <= data_buf[511:32];
+
+			data15_p1 <= `S1( S[i-1].data[`IDX(15)] );											// 3
+			data15_p2 <= data15_p1;														// 1
+			data15_p3 <= ( ( i == 1 ) ? `S1( S[i-1].data[`IDX(14)] ) : S[i-1].data15_p2 ) + S[i-1].data[`IDX(9)] + S[i-1].data[`IDX(0)];	// 3
+			data[`IDX(15)] <= `S0( data_buf[`IDX(1)] ) + data15_p3;										// 4
+			
+    	    		state_buf <= S[i-1].state;													// 2
+			
+		        t1 <= `CH( S[i-1].state[`IDX(4)], S[i-1].state[`IDX(5)], S[i-1].state[`IDX(6)] ) + `E1( S[i-1].state[`IDX(4)] ) + S[i-1].t1_p1;	// 6
+
+	                state[`IDX(0)] <= `MAJ( state_buf[`IDX(0)], state_buf[`IDX(1)], state_buf[`IDX(2)] ) + `E0( state_buf[`IDX(0)] ) + t1;		// 7
+			state[`IDX(1)] <= state_buf[`IDX(0)];												// 1
+			state[`IDX(2)] <= state_buf[`IDX(1)];												// 1
+			state[`IDX(3)] <= state_buf[`IDX(2)];												// 1
+			state[`IDX(4)] <= state_buf[`IDX(3)] + t1;											// 2
+			state[`IDX(5)] <= state_buf[`IDX(4)];												// 1
+			state[`IDX(6)] <= state_buf[`IDX(5)];												// 1
+
+			t1_p1 <= state_buf[`IDX(6)] + data_buf[`IDX(1)] + Ks[`IDX((127-i) & 63)];							// 2
+		    end
+
+		end
 	    end
 
 	endgenerate
 
-	reg [31:0] state7;
+	reg [31:0] state7, state7_buf;
 
 	always @ (posedge clk)
 	begin
-	    state7 <= S[STAGES-1].w_state[`IDX(6)];
+	    state7_buf <= S[STAGES-1].state[`IDX(6)];
+	    state7 <= state7_buf;
 	end
 
+ 	assign out[223:0] = S[STAGES].state;
 	assign out[255:224] = state7;
-	assign out[223:0] = S[STAGES].w_state;
 
 endmodule
 
 
-module sha256_pipe66 ( clk, state, state2, data,  hash );
+module sha256_pipe130 ( clk, state, state2, data,  hash );
 
 	input clk;
 	input [255:0] state, state2;
@@ -115,10 +134,10 @@ module sha256_pipe66 ( clk, state, state2, data,  hash );
 
 	wire [255:0] out;	
 
-	sha256_pipe_base #( .STAGES(64) ) P (
+	sha256_pipe2_base #( .STAGES(64) ) P (
 	    .clk(clk),
-	    .state(state),
-	    .data(data),
+	    .i_state(state),
+	    .i_data(data),
 	    .out(out)
 	);
 
@@ -137,7 +156,7 @@ module sha256_pipe66 ( clk, state, state2, data,  hash );
 endmodule
 
 
-module sha256_pipe62 ( clk, data,  hash );
+module sha256_pipe123 ( clk, data,  hash );
 
 	parameter state = 256'h5be0cd191f83d9ab9b05688c510e527fa54ff53a3c6ef372bb67ae856a09e667;
 
@@ -147,10 +166,10 @@ module sha256_pipe62 ( clk, data,  hash );
 
 	wire [255:0] out;	
 
-	sha256_pipe_base #( .STAGES(61) ) P (
+	sha256_pipe2_base #( .STAGES(61) ) P (
 	    .clk(clk),
-	    .state(state),
-	    .data(data),
+	    .i_state(state),
+	    .i_data(data),
 	    .out(out)
 	);
 
@@ -159,7 +178,7 @@ module sha256_pipe62 ( clk, data,  hash );
 endmodule
 
 
-module sha256_pipe65 ( clk, state, data,  hash );
+module sha256_pipe129 ( clk, state, data,  hash );
 
 	input clk;
 	input [255:0] state;
@@ -168,78 +187,13 @@ module sha256_pipe65 ( clk, state, data,  hash );
 
 	wire [255:0] out;	
 
-	sha256_pipe_base #( .STAGES(64) ) P (
+	sha256_pipe2_base #( .STAGES(64) ) P (
 	    .clk(clk),
-	    .state(state),
-	    .data(data),
+	    .i_state(state),
+	    .i_data(data),
 	    .out(out)
 	);
 
 	assign hash = out;
 
 endmodule
-
-
-module sha256_stage0 ( clk, i_data, i_state, o_data, o_state, o_t1, o_data14 );
-
-        parameter K_NEXT = 32'd0;
-	parameter STAGES = 64;
-
-	input clk;
-	input [511:0] i_data;
-	input [255:0] i_state;
-
-	output reg [479:0] o_data;
-	output reg [223:0] o_state;
-	output reg [31:0] o_t1, o_data14;
-
-	wire [31:0] s0;
-	
-	always @ (posedge clk)
-	begin
-	    o_data <= i_data[511:32];
-	    o_state <= i_state[223:0];
-	    o_t1 <= i_state[`IDX(7)] + i_data[`IDX(0)] + K_NEXT;
-	    o_data14 <= `S0( i_data[`IDX(1)] ) + i_data[`IDX(0)];
-	end
-endmodule
-
-
-module sha256_stage ( clk, i_data, i_state, i_t1, i_data14, o_data, o_state, o_t1, o_data14 );
-
-        parameter K_NEXT = 32'd0;
-	parameter STAGES = 64;
-
-	input clk;
-	input [31:0] i_t1, i_data14;
-	input [479:0] i_data;
-	input [223:0] i_state;
-
-	output reg [479:0] o_data;
-	output reg [223:0] o_state;
-	output reg [31:0] o_t1, o_data14;
-
-	wire [31:0] t1 = `E1( i_state[`IDX(4)] ) + `CH( i_state[`IDX(4)], i_state[`IDX(5)], i_state[`IDX(6)] ) + i_t1;
-	wire [31:0] t2 = `E0( i_state[`IDX(0)] ) + `MAJ( i_state[`IDX(0)], i_state[`IDX(1)], i_state[`IDX(2)] );
-	wire [31:0] data14 = `S1( i_data[`IDX(13)] ) + i_data[`IDX(8)] + i_data14;
-
-	always @ (posedge clk)
-	begin
-		o_data[447:0] <= i_data[479:32];
-		o_data[`IDX(14)] <= data14;
-
-		o_state[`IDX(0)] <= t1 + t2;
-		o_state[`IDX(1)] <= i_state[`IDX(0)];
-		o_state[`IDX(2)] <= i_state[`IDX(1)];
-		o_state[`IDX(3)] <= i_state[`IDX(2)];
-		o_state[`IDX(4)] <= i_state[`IDX(3)] + t1;
-		o_state[`IDX(5)] <= i_state[`IDX(4)];
-		o_state[`IDX(6)] <= i_state[`IDX(5)];
-
-		o_t1 <= i_state[`IDX(6)] + i_data[`IDX(0)] + K_NEXT;
-		o_data14 <= `S0( i_data[`IDX(1)] ) + i_data[`IDX(0)];
-	end
-
-endmodule
-
-

@@ -16,7 +16,7 @@
    along with this program; if not, see http://www.gnu.org/licenses/.
 !*/
 
-module ztex_ufm1_15d1 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dcm_progen,  rd_clk, wr_clk, wr_start, read, write);
+module ztex_ufm1_15b1 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dcm_progen,  rd_clk, wr_clk, wr_start, read, write);
 
 	input fxclk_in, reset, pll_stop, dcm_progclk, dcm_progdata, dcm_progen, rd_clk, wr_clk, wr_start;
 	input [7:0] read;
@@ -33,7 +33,7 @@ module ztex_ufm1_15d1 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
 	wire fxclk, clk, dcm_clk, pll_fb, pll_clk0, dcm_locked, pll_reset;
 	wire [31:0] golden_nonce, nonce2, hash2;
 	
-	miner253 m (
+	miner130 m (
 	    .clk(clk),
 	    .reset(reset_buf),
 	    .midstate(inbuf[351:96]),
@@ -55,7 +55,7 @@ module ztex_ufm1_15d1 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
 
         DCM_CLKGEN #(
 	  .CLKFX_DIVIDE(6.0),
-          .CLKFX_MULTIPLY(26),
+          .CLKFX_MULTIPLY(22),
           .CLKFXDV_DIVIDE(2)
 	) 
 	dcm0 (

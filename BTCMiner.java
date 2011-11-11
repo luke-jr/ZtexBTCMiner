@@ -18,6 +18,8 @@
 
 /* TODO: 
  * longPolling
+ * commands: q,r
+ * parallel loading of bitstreams
 */ 
  
 
@@ -42,6 +44,8 @@ class ParameterException extends Exception {
 		"    -host <string>    Host URL (default: http://127.0.0.1:8332)\n" +
 		"    -u <string>       RPC User name\n" + 
 		"    -p <string>       RPC Password\n" + 
+		"    -b <url> <user name> <password> \n" + 
+		"                      URL, user name and password of a backup server. Can be specified multiple times. \n"+
 		"    -l	<log file>     Log file \n" +
 		"    -lb <log file>    Log of submitted blocks file \n" +
 		"    -m s|t|p|c        Set single mode, test mode, programming mode or cluster mode\n"+
@@ -84,15 +88,6 @@ class ParserException extends Exception {
 class FirmwareException extends Exception {
     public FirmwareException(String msg ) {
 	super( msg );
-    }
-}    
-
-/* *****************************************************************************
-   ******* IsDummyMinerException ***********************************************
-   ***************************************************************************** */   
-class IsDummyMinerException extends Exception {
-    public IsDummyMinerException( ) {
-	super( "Internal error: DummyMiner " );
     }
 }    
 
@@ -265,6 +260,10 @@ class BTCMinerCluster {
 
 // ******* scan ****************************************************************
     private void scan ( boolean verbose ) {
+	long t = new Date().getTime();
+
+	for (int i=0; i<allMiners.size(); i++ ) 
+	    allMiners.elementAt(i).startTimeAdjust = t;
 	allMiners.clear();
 
 	BTCMiner.printMsg("\n(Re)Scanning bus ... ");
@@ -299,6 +298,10 @@ class BTCMinerCluster {
 		BTCMiner.printMsg( "Error: "+e.getLocalizedMessage() );
 	    }
 	}
+
+	t = new Date().getTime();
+	for (int i=0; i<allMiners.size(); i++ ) 
+	    allMiners.elementAt(i).startTime+= t-allMiners.elementAt(i).startTimeAdjust;
 	
 	PollLoop.scanMode = false;
 	
@@ -345,48 +348,56 @@ class PollLoop {
 	
 // ******* run *****************************************************************
     public void run ( ) {
+	int maxIoErrorCount = BTCMiner.rpcCount > 1 ? 2 : 4;
+	int ioDisableTime = BTCMiner.rpcCount > 1 ? 60 : 30;
+	
 	while ( v.size()>0 ) {
 	    long t0 = new Date().getTime();
 
 	    if ( ! scanMode ) {
-		long tn = 0;
+		long tu = 0;
 		
 		synchronized ( v ) {
 		    for ( int i=v.size()-1; i>=0; i-- ) {
 			BTCMiner m = v.elementAt(i);
-			m.networkTime = 0;
-			long t = new Date().getTime();
-	    		if ( m.disableTime < t ) {
-			    try { 
-				if ( /*m.updateCnt<updateImmediately ||*/ m.checkUpdate() ) {
-				    m.getWork();  // calls getNonces
-				    // m.updateCnt = updateImmediately;
-				    m.dmsg("Got new work");
-				    m.sendData();
-				}
-				else {
-				    m.getNonces();
-				}
-				m.updateFreq();
-				m.printInfo(false);
+			m.usbTime = 0;
+
+			try { 
+			    if ( m.checkUpdate() && m.getWork() ) { // getwork calls getNonces
+			        m.dmsg("Got new work");
+			        m.sendData();
 			    }
-			    catch ( UsbException e ) {
-    				m.msg("Error: "+e.getLocalizedMessage()+": Disabeling device");
-    				m.fatalError = "Error: "+e.getLocalizedMessage()+": Device disabled since " + BTCMiner.dateFormat.format( new Date() );
-    				v.removeElementAt(i);
+			    else {
+			        m.getNonces();
 			    }
-			    catch ( Exception e ) {
-    				m.msg("Error: "+e.getLocalizedMessage() +": Disabeling miner for 60s");
-    				m.disableTime = new Date().getTime() + 60000;
-    			    }
+			    m.updateFreq();
+			    m.printInfo(false);
+			}
+			catch ( IOException e ) {
+			    m.ioErrorCount[m.rpcNum]++;
+			    if ( m.ioErrorCount[m.rpcNum] >= maxIoErrorCount ) {
+    			        m.msg("Error: "+e.getLocalizedMessage() +": Disabling URL " + m.rpcurl[m.rpcNum] + " for " + ioDisableTime + "s");
+    			        m.disableTime[m.rpcNum] = new Date().getTime() + ioDisableTime*1000;
+    			        m.ioErrorCount[m.rpcNum] = 0;
+			    }
     			}
-    			tn += m.networkTime;
+			catch ( ParserException e ) {
+    			    m.msg("Error: "+e.getLocalizedMessage() +": Disabling URL " + m.rpcurl[m.rpcNum] + " for 60s");
+    			    m.disableTime[m.rpcNum] = new Date().getTime() + 60000;
+    			}
+			catch ( Exception e ) {
+    			    m.msg("Error: "+e.getLocalizedMessage()+": Disabling device");
+    			    m.fatalError = "Error: "+e.getLocalizedMessage()+": Device disabled since " + BTCMiner.dateFormat.format( new Date() );
+    			    v.removeElementAt(i);
+			}
+
+    			tu += m.usbTime;
     		    }
 		}
 
 		t0 = new Date().getTime() - t0;
-		usbTime = usbTime * 0.9998 + t0 - tn;
-		networkTime = networkTime * 0.9998 + tn;
+		usbTime = usbTime * 0.9998 + tu;
+		networkTime = networkTime * 0.9998 + t0 - tu;
 		timeW = timeW * 0.9998 + 1;
 	    }
 	    
@@ -435,9 +446,12 @@ class BTCMiner {
 // *****************************************************************************
 // ******* static methods ******************************************************
 // *****************************************************************************
-    static String rpcurl = "http://127.0.0.1:8332";
-    static String rpcuser = null;
-    static String rpcpassw = null;
+    static final int maxRpcCount = 32;
+    static String[] rpcurl = new String[maxRpcCount];
+    static String[] rpcuser = new String[maxRpcCount];
+    static String[] rpcpassw = new String[maxRpcCount];
+    static int rpcCount = 1;
+    
     static int bcid = -1;
 
     static String firmwareFile = null;
@@ -622,6 +636,8 @@ class BTCMiner {
 	return snString;
     }
 
+
+
 // ******* getType *************************************************************
     private static String getType ( ZtexDevice1 pDev ) {
 	byte[] buf = new byte[64];
@@ -655,6 +671,12 @@ class BTCMiner {
     private String bitFileName = null;
     public String name;
     public String fatalError = null;
+
+    public int ioErrorCount[] = new int[maxRpcCount];
+    public long disableTime[] = new long[maxRpcCount];
+    
+    public int rpcNum = 0;
+    private int prevRpcNum = 0;
     
     public boolean verbose = false;
     public boolean clusterMode = false;
@@ -674,10 +696,10 @@ class BTCMiner {
     public int[] lastGoldenNonces = { 0, 0, 0, 0, 0, 0, 0, 0 };
     public int[] goldenNonce, nonce, hash7;
     public int submittedCount = 0,  totalSubmittedCount = 0;
-    public long startTime;
+    public long startTime, startTimeAdjust;
     
     public int overflowCount = 0;
-    public long networkTime = 0;
+    public long usbTime = 0;
     public double getTime = 0.0; 
     public double getTimeW = 1e-6; 
     public double submitTime = 0.0; 
@@ -686,7 +708,6 @@ class BTCMiner {
     public long maxPollInterval = 20000;
     public long infoInterval = 15000;
     
-    public long disableTime = 0;
     public long lastGetWorkTime = 0;
     public long ignoreErrorTime = 0;
     public long lastInfoTime = 0;
@@ -719,11 +740,7 @@ class BTCMiner {
         if ( ! ztex.valid() || ztex.dev().productId(0)!=10 || ztex.dev().productId(2)!=1 || ztex.dev().productId(3)!=1 )
     	    throw new FirmwareException("Wrong or no firmware");
 
-    	try {
-	    getDescriptor();    	    
-	}
-	catch ( IsDummyMinerException e ) { // will never occur here
-	}
+	getDescriptor();    	    
 	
 	goldenNonce = new int[numNonces];
 	nonce = new int[numNonces];
@@ -762,14 +779,15 @@ class BTCMiner {
 	}
 	
 	startTime = new Date().getTime();
+	startTimeAdjust = startTime;
+	
+	for (int i=0; i<rpcCount; i++) {
+	    disableTime[i] = 0;
+	    ioErrorCount[i] = 0;
+	}
 	
     }
 
-    public BTCMiner ( ) throws NoSuchAlgorithmException {
-	ztex = null;
-	digest = MessageDigest.getInstance("SHA-256");
-    }
-    
 // ******* ztex ****************************************************************
     public Ztex1v1 ztex() {
 	return ztex;
@@ -809,11 +827,11 @@ class BTCMiner {
 
 // ******* httpGet *************************************************************
     String httpGet(String request) throws MalformedURLException, IOException {
-	HttpURLConnection con = (HttpURLConnection) new URL(rpcurl).openConnection();
+	HttpURLConnection con = (HttpURLConnection) new URL(rpcurl[rpcNum]).openConnection();
         con.setRequestMethod("POST");
-        con.setConnectTimeout(15000);
-        con.setReadTimeout(15000);
-        con.setRequestProperty("Authorization", "Basic " + encodeBase64(rpcuser + ":" + rpcpassw));
+        con.setConnectTimeout(1500);
+        con.setReadTimeout(1500);
+        con.setRequestProperty("Authorization", "Basic " + encodeBase64(rpcuser[rpcNum] + ":" + rpcpassw[rpcNum]));
         con.setRequestProperty("Accept-Encoding", "gzip,deflate");
         con.setRequestProperty("Content-Type", "application/json");
 	con.setRequestProperty("Cache-Control", "no-cache");
@@ -823,13 +841,11 @@ class BTCMiner {
         con.setDoInput(true);
         con.setDoOutput(true);
         
-
         // Send request
         OutputStreamWriter wr = new OutputStreamWriter ( con.getOutputStream ());
         wr.write(request);
         wr.flush();
         wr.close();
-
 
         // read response header
         String rejectReason = con.getHeaderField("X-Reject-Reason");
@@ -856,9 +872,10 @@ class BTCMiner {
         }
         is.close();
         con.disconnect();
+        
+        ioErrorCount[rpcNum] = 0;
 
         return response.toString();
-
     }
 
 // ******* bitcoinRequest ******************************************************
@@ -868,30 +885,40 @@ class BTCMiner {
     }
 
 // ******* getWork *************************************************************
-    public void getWork() throws UsbException, IsDummyMinerException, MalformedURLException, IOException, ParserException {
+    public boolean getWork() throws UsbException, MalformedURLException, IOException, ParserException {
 
 	long t = new Date().getTime();
+    
+	int i = 0;
+	while ( i<rpcCount && (disableTime[i]>t) ) 
+	    i++;
+	if ( i >= rpcCount )
+	    return false;
+
+	rpcNum = i;	
 	String response = bitcoinRequest("getwork","" );
 	t = new Date().getTime() - t;
 	getTime = getTime * 0.99 + t;
 	getTimeW = getTimeW * 0.99 + 1;
-	networkTime += t;
 
-	while ( getNonces() ) {}
+//	try {
+	    while ( getNonces() ) {}
+//	}
+//	catch ( IOException e )
+//	    ioErrorCount[rpcNum]++;
+//	}
 
 	hexStrToData(jsonParse(response,"data"), dataBuf);
 	hexStrToData(jsonParse(response,"midstate"), midstateBuf);
 	initWork();
 	lastGetWorkTime = new Date().getTime();
+	prevRpcNum = i;
+	return true;
     }
 
 // ******* submitWork **********************************************************
     public void submitWork( int n ) throws MalformedURLException, IOException {
 	long t = new Date().getTime();
-
-	for (int i=lastGoldenNonces.length-1; i>0; i-- )
-	    lastGoldenNonces[i]=lastGoldenNonces[i-1];
-	lastGoldenNonces[0] = n;
 
 	dataBuf[76  ] = (byte) (n & 255);
 	dataBuf[76+1] = (byte) ((n >> 8) & 255);
@@ -911,10 +938,13 @@ class BTCMiner {
 	if ( err!=null && !err.equals("null") && !err.equals("") ) 
 	    msg( "Error attempting to submit new nonce: " + err );
 
+	for (int i=lastGoldenNonces.length-1; i>0; i-- )
+	    lastGoldenNonces[i]=lastGoldenNonces[i-1];
+	lastGoldenNonces[0] = n;
+
 	t = new Date().getTime() - t;
 	submitTime = submitTime * 0.99 + t;
 	submitTimeW = submitTimeW * 0.99 + 1;
-	networkTime += t;
     }
 
 // ******* initWork **********************************************************
@@ -973,13 +1003,16 @@ class BTCMiner {
     }
 
 // ******* sendData ***********************************************************
-    public void sendData () throws UsbException, IsDummyMinerException {
-	if ( ztex==null ) throw new IsDummyMinerException();
+    public void sendData () throws UsbException {
 	for ( int i=0; i<12; i++ ) 
 	    sendBuf[i] = dataBuf[i+64];
 	for ( int i=0; i<32; i++ ) 
 	    sendBuf[i+12] = midstateBuf[i];
+	    
+	long t = new Date().getTime();
         ztex.vendorCommand2( 0x80, "Send hash data", 0, 0, sendBuf, 44 );
+        usbTime += new Date().getTime() - t;
+        
         ignoreErrorTime = new Date().getTime() + 500; // ignore errors for next 1s
 	for ( int i=0; i<numNonces; i++ ) 
 	    nonce[i] = 0;
@@ -987,15 +1020,18 @@ class BTCMiner {
     }
 
 // ******* setFreq *************************************************************
-    public void setFreq (int m) throws UsbException, IsDummyMinerException {
-	if ( ztex==null ) throw new IsDummyMinerException();
+    public void setFreq (int m) throws UsbException {
 	if ( m > freqMaxM ) m = freqMaxM;
+
+	long t = new Date().getTime();
         ztex.vendorCommand( 0x83, "Send hash data", m, 0 );
+        usbTime += new Date().getTime() - t;
+
         ignoreErrorTime = new Date().getTime() + 2000; // ignore errors for next 2s
     }
 
 // ******* updateFreq **********************************************************
-    public void updateFreq() throws UsbException, IsDummyMinerException {
+    public void updateFreq() throws UsbException {
 	int maxM = 0;
 	while ( maxM<freqMDefault && maxErrorRate[maxM+1]<maxMaxErrorRate )
 	    maxM++;
@@ -1020,8 +1056,11 @@ class BTCMiner {
     }
 
 // ******* getNonces ***********************************************************
-    public boolean getNonces() throws UsbException, IsDummyMinerException, MalformedURLException, IOException {
-	if ( !isRunning ) return false;
+    public boolean getNonces() throws UsbException, MalformedURLException, IOException {
+	if ( !isRunning || disableTime[prevRpcNum] > new Date().getTime() ) return false;
+	
+	rpcNum = prevRpcNum;
+	
 	getNoncesInt();
 	
         if ( ignoreErrorTime < new Date().getTime() ) {
@@ -1047,9 +1086,9 @@ class BTCMiner {
     		    while ( j<lastGoldenNonces.length && lastGoldenNonces[j]!=n )
     			j++;
         	    if  (j>=lastGoldenNonces.length) {
+        	        submitWork( n );
         		submittedCount+=1;
         		totalSubmittedCount+=1;
-        	        submitWork( n );
         	        submitted = true;
         	    }
     		}
@@ -1059,11 +1098,14 @@ class BTCMiner {
     } 
 
 // ******* getNoncesInt ********************************************************
-    public void getNoncesInt() throws UsbException, IsDummyMinerException {
-	if ( ztex==null ) throw new IsDummyMinerException();
+    public void getNoncesInt() throws UsbException {
 	byte[] buf = new byte[numNonces*12];
 	boolean overflow = false;
+
+	long t = new Date().getTime();
         ztex.vendorRequest2( 0x81, "Read hash data", 0, 0, buf, numNonces*12 );
+        usbTime += new Date().getTime() - t;
+        
 //	System.out.print(dataToHexStr(buf)+"            ");
         for ( int i=0; i<numNonces; i++ ) {
 	    goldenNonce[i] = dataToInt(buf,i*12+0) - offsNonces;
@@ -1077,7 +1119,7 @@ class BTCMiner {
     }
 
 // ******* checkNonce *******************************************************
-    public boolean checkNonce( int n, int h ) throws UsbException, IsDummyMinerException {
+    public boolean checkNonce( int n, int h ) throws UsbException {
 	int offs[] = { 0, 1, -1, 2, -2 };
 //	int offs[] = { 0 };
 	for (int i=0; i<offs.length; i++ ) {
@@ -1124,9 +1166,8 @@ class BTCMiner {
     }
 
 // ******* getDescriptor *******************************************************
-    private void getDescriptor () throws UsbException, FirmwareException, IsDummyMinerException {
+    private void getDescriptor () throws UsbException, FirmwareException {
 	byte[] buf = new byte[64];
-	if ( ztex==null ) throw new IsDummyMinerException();
         ztex.vendorRequest2( 0x82, "Read descriptor", 0, 0, buf, 64 );
         if ( buf[0] != 2 ) {
     	    throw new FirmwareException("Invalid BTCMiner descriptor version");
@@ -1151,7 +1192,8 @@ class BTCMiner {
 // ******* checkUpdate **********************************************************
     public boolean checkUpdate() {
 	long t = new Date().getTime();
-	if ( ignoreErrorTime>t ) return false;
+	if ( ignoreErrorTime > t ) return false;
+	if ( disableTime[prevRpcNum] > t ) return true;
 	if ( lastGetWorkTime + maxPollInterval < t ) return true;
 	for ( int i=0; i<numNonces ; i++ )
 	    if ( nonce[i]<0 ) return true;
@@ -1179,6 +1221,11 @@ class BTCMiner {
         String filterType = null, filterSN = null;
         
         char mode = 's';
+        
+        rpcCount = 1; 
+        rpcurl[0] = "http://127.0.0.1:8332";
+        rpcuser[0] = null;
+        rpcpassw[0] = null;
 
 	try {
 // init USB stuff
@@ -1225,17 +1272,17 @@ class BTCMiner {
 	    	    i++;
 		    try {
 			if (i>=args.length) throw new Exception();
-    			rpcurl = args[i];
+    			rpcurl[0] = args[i];
 		    } 
 		    catch (Exception e) {
-		        throw new ParameterException("URL expected after -url");
+		        throw new ParameterException("URL expected after -host");
 		    }
 		}
 	        else if ( args[i].equals("-u") ) {
 	    	    i++;
 		    try {
 			if (i>=args.length) throw new Exception();
-    			rpcuser = args[i];
+    			rpcuser[0] = args[i];
 		    } 
 		    catch (Exception e) {
 		        throw new ParameterException("User expected after -u");
@@ -1245,10 +1292,25 @@ class BTCMiner {
 	    	    i++;
 		    try {
 			if (i>=args.length) throw new Exception();
-    			rpcpassw = args[i];
+    			rpcpassw[0] = args[i];
 		    } 
 		    catch (Exception e) {
 		        throw new ParameterException("Password expected after -p");
+		    }
+		}
+	        else if ( args[i].equals("-b") ) {
+	    	    i+=3;
+		    try {
+			if (i>=args.length) throw new Exception();
+			if ( rpcCount >= maxRpcCount )
+			    throw new IndexOutOfBoundsException("Maximum aoumount of backup servers reached");
+    			rpcurl[rpcCount] = args[i-2];
+    			rpcuser[rpcCount] = args[i-1];
+    			rpcpassw[rpcCount] = args[i];
+			rpcCount+=1;
+		    } 
+		    catch (Exception e) {
+		        throw new ParameterException("<URL> <user name> <password> expected after -b");
 		    }
 		}
 	        else if ( args[i].equals("-f") ) {
@@ -1327,22 +1389,22 @@ class BTCMiner {
 		BTCMinerCluster.maxDevicesPerThread = 127;
 	    
 	    if ( mode != 't' && mode != 'p' ) {
-		if ( rpcuser == null ) {
+		if ( rpcuser[0] == null ) {
 		    System.out.print("Enter RPC user name: ");
-		    rpcuser = new BufferedReader(new InputStreamReader( System.in) ).readLine();
+		    rpcuser[0] = new BufferedReader(new InputStreamReader( System.in) ).readLine();
 		}
 
-		if ( rpcpassw == null ) {
+		if ( rpcpassw[0] == null ) {
 		    System.out.print("Enter RPC password: ");
-		    rpcpassw = new BufferedReader(new InputStreamReader(System.in) ).readLine();
+		    rpcpassw[0] = new BufferedReader(new InputStreamReader(System.in) ).readLine();
 		}
 	    }
 		
-	    Authenticator.setDefault(new Authenticator() {
+/*	    Authenticator.setDefault(new Authenticator() {
     		protected PasswordAuthentication getPasswordAuthentication() {
         	    return new PasswordAuthentication (BTCMiner.rpcuser, BTCMiner.rpcpassw.toCharArray());
     		}
-	    });
+	    }); */
 	    
 
 	    if ( mode == 's' || mode == 't' ) {

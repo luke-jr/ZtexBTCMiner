@@ -1,5 +1,5 @@
 NET "fxclk_in" TNM_NET = "fxclk_in";
-TIMESPEC "TS_fxclk_in" = PERIOD "fxclk_in" 20.833ns HIGH 50 %;
+TIMESPEC "TS_fxclk_in" = PERIOD "fxclk_in" 18.3ns HIGH 50 %;
 NET "fxclk_in"  LOC = "L22" | IOSTANDARD = LVCMOS33 ;
 
 # input

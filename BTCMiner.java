@@ -310,6 +310,10 @@ class BTCMinerCluster {
 	    BTCMiner.printMsg("  Bus " + threads.elementAt(i).busName() + "\t: " + threads.elementAt(i).size() + " devices");
 	BTCMiner.printMsg("  Total  \t: " + allMiners.size() + " devices\n");
 	BTCMiner.printMsg("\nDisconnect all devices or press Ctrl-C for exit.\nPress \"r\" Enter for re-scanning.\n");
+	
+	BTCMiner.connectionEffort = 1.0 + Math.exp( (1.0 - Math.sqrt(Math.min(allMiners.size(),maxDevicesPerThread)*allMiners.size())) / 13.0 );
+//	System.out.println( BTCMiner.connectionEffort );
+
     }
 
 }
@@ -348,7 +352,7 @@ class PollLoop {
 	
 // ******* run *****************************************************************
     public void run ( ) {
-	int maxIoErrorCount = BTCMiner.rpcCount > 1 ? 2 : 4;
+	int maxIoErrorCount = (int) Math.round( (BTCMiner.rpcCount > 1 ? 2 : 4)*BTCMiner.connectionEffort );
 	int ioDisableTime = BTCMiner.rpcCount > 1 ? 60 : 30;
 	
 	while ( v.size()>0 ) {
@@ -461,6 +465,8 @@ class BTCMiner {
 
     static PrintStream logFile = null;
     static PrintStream blkLogFile = null;
+    
+    static double connectionEffort = 2.0;
     
 // ******* printMsg *************************************************************
     public static void printMsg ( String msg ) {
@@ -829,8 +835,8 @@ class BTCMiner {
     String httpGet(String request) throws MalformedURLException, IOException {
 	HttpURLConnection con = (HttpURLConnection) new URL(rpcurl[rpcNum]).openConnection();
         con.setRequestMethod("POST");
-        con.setConnectTimeout(1500);
-        con.setReadTimeout(1500);
+        con.setConnectTimeout((int) Math.round(2000.0*BTCMiner.connectionEffort));
+        con.setReadTimeout((int) Math.round(2000.0*BTCMiner.connectionEffort));
         con.setRequestProperty("Authorization", "Basic " + encodeBase64(rpcuser[rpcNum] + ":" + rpcpassw[rpcNum]));
         con.setRequestProperty("Accept-Encoding", "gzip,deflate");
         con.setRequestProperty("Content-Type", "application/json");

@@ -55,7 +55,7 @@ module ztex_ufm1_15d1 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
 
         DCM_CLKGEN #(
 	  .CLKFX_DIVIDE(6.0),
-          .CLKFX_MULTIPLY(26),
+          .CLKFX_MULTIPLY(24),
           .CLKFXDV_DIVIDE(2)
 	) 
 	dcm0 (

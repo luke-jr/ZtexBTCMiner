@@ -52,6 +52,7 @@ __xdata BYTE buf_ptr1, buf_ptr2;
 ]
 
 #define[POST_FPGA_CONFIG][POST_FPGA_CONFIG
+    IOC = bmBIT2;	// reset PLL
     OEC = bmBIT0 | bmBIT1 | bmBIT2;
     IOC = bmBIT2;	// reset PLL
     stopped = 1;

@@ -1,5 +1,5 @@
 /*!
-   btcminer -- BTCMiner for ZTEX USB-FPGA Modules: EZ-USB FX2 firmware for ZTEX USB FPGA Module 1.15b (one single hash pipe)
+   btcminer -- BTCMiner for ZTEX USB-FPGA Modules: EZ-USB FX2 firmware for ZTEX USB FPGA Module 1.15d (one double hash pipe)
    Copyright (C) 2011 ZTEX GmbH
    http://www.ztex.de
 
@@ -17,10 +17,11 @@
 !*/
 
 #define[NUM_NONCES][1]
-#define[OFFS_NONCES][130]
-#define[F_MULT][23]
-#define[F_MAX_MULT][28]
-#define[HASHES_PER_CLOCK][64]
-#define[BITFILE_STRING]["ztex_ufm1_15b1"]
+#define[OFFS_NONCES][0]
+#define[F_MULT][32]
+#define[F_MAX_MULT][37]
+#define[F_M1][600]
+#define[HASHES_PER_CLOCK][128]
+#define[BITFILE_STRING]["ztex_ufm1_15d2"]
 
 #include[btcminer.h]

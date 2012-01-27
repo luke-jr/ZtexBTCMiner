@@ -17,7 +17,6 @@
 !*/
 
 /* TODO: 
- * longPolling
  * commands: q,r
  * parallel loading of bitstreams
 */ 
@@ -46,6 +45,8 @@ class ParameterException extends Exception {
 		"    -p <string>       RPC Password\n" + 
 		"    -b <url> <user name> <password> \n" + 
 		"                      URL, user name and password of a backup server. Can be specified multiple times. \n"+
+		"    -lp <url> <user name> <password> \n" + 
+		"                      URL, user name and password of a long polling server (determined automatically by default) \n"+
 		"    -l	<log file>     Log file \n" +
 		"    -lb <log file>    Log of submitted blocks file \n" +
 		"    -m s|t|p|c        Set single mode, test mode, programming mode or cluster mode\n"+
@@ -90,6 +91,131 @@ class FirmwareException extends Exception {
 	super( msg );
     }
 }    
+
+
+// *****************************************************************************
+// ******* MsgObj *************************************************************
+// *****************************************************************************
+interface MsgObj {
+    public void msg(String s);
+}
+    
+
+// *****************************************************************************
+// ******* NewBlockMonitor *****************************************************
+// *****************************************************************************
+class NewBlockMonitor extends Thread implements MsgObj {
+    public int newCount = -1;
+    
+    public boolean running;
+    
+    private static final int minLongPollInterval = 250; // in ms
+
+    private byte[] prevBlock = new byte[32];
+    private byte[] dataBuf = new byte[128];
+    
+    private Vector<LogString> logBuf = new Vector<LogString>();
+    
+    
+    
+// ******* constructor *********************************************************
+    public NewBlockMonitor( ) {
+	start();
+    }
+
+// ******* checkNew ***********************************************************Ü
+    synchronized public boolean checkNew ( byte[] data ) throws NumberFormatException {
+	if ( data.length < 36 )
+	    throw new NumberFormatException("Invalid length of data");
+
+	boolean n = false;
+
+	for ( int i=0; i<32; i++ ) {
+	    n = n | ( data[i+4] != prevBlock[i] );
+	    prevBlock[i] = data[i+4];
+	}
+	if ( n ) {
+	    newCount += 1;
+	    if ( newCount > 0 )
+		msg("New block detected by block monitor");
+	}
+	    
+	return n;
+    }
+
+// ******* run *****************************************************************
+    public void run () {
+	running = true;
+	
+	boolean enableLP = true;
+	long enableLPTime = 0;
+
+	while ( running ) {
+	    long t = new Date().getTime();
+	    
+	    if ( BTCMiner.longPollURL!=null && enableLP && t>enableLPTime) {
+		try {
+//		    msg("info: LP");
+		    BTCMiner.hexStrToData(BTCMiner.jsonParse(BTCMiner.bitcoinRequest(this, BTCMiner.longPollURL, BTCMiner.longPollUser, BTCMiner.longPollPassw, "getwork", ""), "data"), dataBuf);
+		    for ( int i=0; i<32; i++ ) {
+			prevBlock[i] = dataBuf[i+4];
+		    }
+		    newCount += 1;
+		    msg("New block detected by long polling");
+		}
+		catch ( MalformedURLException e ) {
+		    msg("Warning: " + e.getLocalizedMessage() + ": disabling long polling");
+		    enableLP = false;
+		}
+		catch ( IOException e ) {
+		    if ( new Date().getTime() < t+500 ) {
+			msg("Warning: " + e.getLocalizedMessage() + ": disabling long polling fo 60s");
+			enableLPTime = new Date().getTime() + 60000;
+		    }
+		}
+		catch ( ParserException e ) {
+		    msg("Warning: " + e.getLocalizedMessage());
+		}
+	    }
+	    
+	    if ( BTCMiner.longPollURL==null )
+		enableLPTime = new Date().getTime() + 2000;
+	    
+	    t = minLongPollInterval - new Date().getTime();
+	    if ( t > 5 ) {
+		try {
+		    Thread.sleep( t );
+		}
+		catch ( InterruptedException e) {
+		}	 
+	    }
+	}
+	
+//	System.out.println("Stopping block monitor"); 
+    }
+
+// ******* msg *****************************************************************
+    public void msg(String s) {
+	synchronized ( logBuf ) {
+	    logBuf.add( new LogString( s ) );
+	}
+    }
+
+// ******* print ***************************************************************
+    public void print () {
+	synchronized ( logBuf ) {
+	    for ( int j=0; j<logBuf.size(); j++ ) {
+	        LogString ls = logBuf.elementAt(j);
+	        System.out.println( ls.msg );
+		if ( BTCMiner.logFile != null ) {
+		    BTCMiner.logFile.println( BTCMiner.dateFormat.format(ls.time) + ": " + ls.msg );
+		}
+	    }
+	    logBuf.clear();
+	}
+    }
+
+}
 
 // *****************************************************************************
 // ******* BTCMinerThread ******************************************************
@@ -182,19 +308,24 @@ class BTCMinerCluster {
 	    catch ( InterruptedException e) {
 	    }
 	    
+	    BTCMiner.newBlockMonitor.print();
 	    for (int i=0; i<allMiners.size(); i++) 
 		allMiners.elementAt(i).print();
 		
 	    if ( new Date().getTime() > nextInfoTime ) {
 		double d = 0.0;
+		double e = 0.0;
 		for ( int i=0; i<allMiners.size(); i++ ) {
-		    allMiners.elementAt(i).printInfo( true );
-		    d+=allMiners.elementAt(i).submittedHashRate();
+		    BTCMiner m = allMiners.elementAt(i);
+		    m.printInfo( true );
+		    d+=m.submittedHashRate();
+		    e+=(m.freqM+1)*m.freqM1*(1-m.errorRate[m.freqM])*m.hashesPerClock;
 		}
 		for ( int i=0; i<threads.size(); i++ )
 		    threads.elementAt(i).printInfo();
 		
-		BTCMiner.printMsg("Total submitted hash rate: " + String.format("%.1f",  d ) + "MH/s");
+		BTCMiner.printMsg("Total hash rate: " + String.format("%.1f",  e ) + " MH/s");
+		BTCMiner.printMsg("Total submitted hash rate: " + String.format("%.1f",  d ) + " MH/s");
 		BTCMiner.printMsg(" -------- ");
 		nextInfoTime = new Date().getTime() + infoInterval;
 	    }
@@ -221,6 +352,8 @@ class BTCMinerCluster {
 	    }
 
 	}
+	
+//	BTCMiner.newBlockMonitor.running = false;
     }
     
 // ******* add *****************************************************************
@@ -338,7 +471,7 @@ class LogString {
 // *****************************************************************************
 class PollLoop {
     public static boolean scanMode = false;
-
+    
     private double usbTime = 0.0;
     private double networkTime = 0.0;
     private double timeW = 1e-6;
@@ -396,6 +529,10 @@ class PollLoop {
 			}
 
     			tu += m.usbTime;
+    			
+    			if ( ! m.clusterMode ) {
+    			    BTCMiner.newBlockMonitor.print();
+    			}
     		    }
 		}
 
@@ -445,7 +582,7 @@ class PollLoop {
 // ******* BTCMiner ************************************************************
 // *****************************************************************************
 // *****************************************************************************
-class BTCMiner {
+class BTCMiner implements MsgObj  {
 
 // *****************************************************************************
 // ******* static methods ******************************************************
@@ -455,6 +592,10 @@ class BTCMiner {
     static String[] rpcuser = new String[maxRpcCount];
     static String[] rpcpassw = new String[maxRpcCount];
     static int rpcCount = 1;
+
+    static String longPollURL = null;
+    static String longPollUser = "";
+    static String longPollPassw = "";
     
     static int bcid = -1;
 
@@ -467,6 +608,8 @@ class BTCMiner {
     static PrintStream blkLogFile = null;
     
     static double connectionEffort = 2.0;
+    
+    static NewBlockMonitor newBlockMonitor = null;
     
 // ******* printMsg *************************************************************
     public static void printMsg ( String msg ) {
@@ -650,16 +793,17 @@ class BTCMiner {
 	try {
 	    Ztex1v1 ztex = new Ztex1v1 ( pDev );
     	    ztex.vendorRequest2( 0x82, "Read descriptor", 0, 0, buf, 64 );
-    	    if ( buf[0] != 1 && buf[0] != 2 ) 
+    	    if ( buf[0] < 1 || buf[0] > 3 ) 
     		throw new FirmwareException("Invalid BTCMiner descriptor version");
 
-    	    int i = 8;
+	    int i0 = buf[0] == 3 ? 10 : 8;
+    	    int i = i0;
     	    while ( i<64 && buf[i]!=0 )
     		i++;
-    	    if ( i < 9)
+    	    if ( i < i0+1 )
     		throw new FirmwareException("Invalid bitstream file name");
 
-    	    return new String(buf, 8, i-8);
+    	    return new String(buf, i0, i-i0);
     	}
     	catch ( Exception e ) {
 	    System.out.println("Warning: "+e.getLocalizedMessage() );
@@ -673,7 +817,8 @@ class BTCMiner {
 // *****************************************************************************
     private Ztex1v1 ztex = null;
     public int numNonces, offsNonces, freqM, freqMDefault, freqMaxM;
-    private double freqM1;
+    public double freqM1;
+    public double hashesPerClock;
     private String bitFileName = null;
     public String name;
     public String fatalError = null;
@@ -691,9 +836,12 @@ class BTCMiner {
 
     private byte[] blockBuf = new byte[80];
     private byte[] dataBuf = new byte[128];
+    private byte[] dataBuf2 = new byte[128];
     private byte[] midstateBuf = new byte[32];
     private byte[] sendBuf = new byte[44];
     private byte[] hashBuf = new byte[32];
+    
+    private int newCount = 0;
 
     private boolean isRunning = false;
     
@@ -792,6 +940,10 @@ class BTCMiner {
 	    ioErrorCount[i] = 0;
 	}
 	
+	if ( newBlockMonitor == null ) {
+	    newBlockMonitor = new NewBlockMonitor();
+	}
+	
     }
 
 // ******* ztex ****************************************************************
@@ -800,14 +952,14 @@ class BTCMiner {
     }
 
 // ******* msg *****************************************************************
-    void msg(String s) {
+    public void msg(String s) {
 	if ( clusterMode ) {
 	    synchronized ( logBuf ) {
 		logBuf.add( new LogString( s ) );
 	    }
 	}
 	else {
-	    printMsg( name + ": " + s );
+	    printMsg( ( name!=null ? name + ": " : "" ) + s );
 	}
     }
 
@@ -824,7 +976,7 @@ class BTCMiner {
 	        LogString ls = logBuf.elementAt(j);
 	        System.out.println( name + ": " + ls.msg );
 		if ( logFile != null ) {
-		    BTCMiner.logFile.println( BTCMiner.dateFormat.format(ls.time) + ": " + name + ": " + ls.msg );
+		    logFile.println( dateFormat.format(ls.time) + ": " + name + ": " + ls.msg );
 		}
 	    }
 	    logBuf.clear();
@@ -832,12 +984,12 @@ class BTCMiner {
     }
 
 // ******* httpGet *************************************************************
-    String httpGet(String request) throws MalformedURLException, IOException {
-	HttpURLConnection con = (HttpURLConnection) new URL(rpcurl[rpcNum]).openConnection();
+    public static String httpGet(MsgObj msgObj, String url, String user, String passw, String request) throws MalformedURLException, IOException {
+	HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
         con.setRequestMethod("POST");
         con.setConnectTimeout((int) Math.round(2000.0*BTCMiner.connectionEffort));
-        con.setReadTimeout((int) Math.round(2000.0*BTCMiner.connectionEffort));
-        con.setRequestProperty("Authorization", "Basic " + encodeBase64(rpcuser[rpcNum] + ":" + rpcpassw[rpcNum]));
+        con.setReadTimeout(url == longPollURL ? 1000000 : (int) Math.round(2000.0*BTCMiner.connectionEffort));
+        con.setRequestProperty("Authorization", "Basic " + encodeBase64(user + ":" + passw));
         con.setRequestProperty("Accept-Encoding", "gzip,deflate");
         con.setRequestProperty("Content-Type", "application/json");
 	con.setRequestProperty("Cache-Control", "no-cache");
@@ -854,9 +1006,22 @@ class BTCMiner {
         wr.close();
 
         // read response header
-        String rejectReason = con.getHeaderField("X-Reject-Reason");
-        if( rejectReason != null && ! rejectReason.equals("") ) {
-            msg("Warning: Rejected block: " + rejectReason);
+        String str = con.getHeaderField("X-Reject-Reason");
+        if( str != null && ! str.equals("") ) {
+            msgObj.msg("Warning: Rejected block: " + str);
+        } 
+
+        // read response header
+    	str = con.getHeaderField("X-Long-Polling");
+        if ( str != null && ! str.equals("") && longPollURL==null ) {
+    	    synchronized ( BTCMiner.newBlockMonitor ) {
+    		if ( longPollURL==null ) {
+    		    longPollURL = url+str;
+    		    msgObj.msg("Using LongPolling URL " + longPollURL);
+    		    longPollUser = user;
+    		    longPollPassw = passw;
+    		}
+    	    }
         }
 
         // read response	
@@ -879,16 +1044,25 @@ class BTCMiner {
         is.close();
         con.disconnect();
         
-        ioErrorCount[rpcNum] = 0;
-
         return response.toString();
     }
 
+/*    String httpGet(String request) throws MalformedURLException, IOException {
+	return httpGet(rpcurl[rpcNum], rpcuser[rpcNum], rpcpassw[rpcNum], request )
+    } */
+
 // ******* bitcoinRequest ******************************************************
-    public String bitcoinRequest( String request, String params) throws MalformedURLException, IOException {
+    public static String bitcoinRequest( MsgObj msgObj, String url, String user, String passw, String request, String params) throws MalformedURLException, IOException {
 	bcid += 1;
-	return httpGet( "{\"jsonrpc\":\"1.0\",\"id\":" + bcid + ",\"method\":\""+ request + "\",\"params\":["+ (params.equals("") ? "" : ("\""+params+"\"")) + "]}" );
+	return httpGet( msgObj, url, user, passw, "{\"jsonrpc\":\"1.0\",\"id\":" + bcid + ",\"method\":\""+ request + "\",\"params\":["+ (params.equals("") ? "" : ("\""+params+"\"")) + "]}" );
     }
+
+    public String bitcoinRequest( String request, String params) throws MalformedURLException, IOException {
+	String s = bitcoinRequest( this, rpcurl[rpcNum], rpcuser[rpcNum], rpcpassw[rpcNum], request, params );
+        ioErrorCount[rpcNum] = 0;
+        return s;
+    }
+
 
 // ******* getWork *************************************************************
     public boolean getWork() throws UsbException, MalformedURLException, IOException, ParserException {
@@ -907,13 +1081,19 @@ class BTCMiner {
 	getTime = getTime * 0.99 + t;
 	getTimeW = getTimeW * 0.99 + 1;
 
-//	try {
-	    while ( getNonces() ) {}
+	hexStrToData(jsonParse(response,"data"), dataBuf2);
+	newBlockMonitor.checkNew( dataBuf2 );
+	newCount = newBlockMonitor.newCount;
+	
+//	if ( newCount == newBlockMonitor.newCount ) {
+//	    try {
+	        while ( getNonces() ) {}
+//	    }
+//	    catch ( IOException e )
+//	        ioErrorCount[rpcNum]++;
+//	    }
 //	}
-//	catch ( IOException e )
-//	    ioErrorCount[rpcNum]++;
-//	}
-
+	
 	hexStrToData(jsonParse(response,"data"), dataBuf);
 	hexStrToData(jsonParse(response,"midstate"), midstateBuf);
 	initWork();
@@ -1160,10 +1340,13 @@ class BTCMiner {
 	if ( errorWeight[freqM]>100.1 || maxErrorRate[freqM]>0.001 )
 	    sb.append(",  maxErrorRate="+ String.format("%.2f",maxErrorRate[freqM]*100)+"%");
 
-	if ( freqM<255 && (errorWeight[freqM+1]>100.1 || maxErrorRate[freqM+1]>0.001 ) )
-	    sb.append(",  nextMaxErrorRate="+ String.format("%.2f",maxErrorRate[freqM+1]*100)+"%");
+/*	if ( freqM<255 && (errorWeight[freqM+1]>100.1 || maxErrorRate[freqM+1]>0.001 ) )
+	    sb.append(",  nextMaxErrorRate="+ String.format("%.2f",maxErrorRate[freqM+1]*100)+"%"); */
+
+	if ( errorWeight[freqM]>20 )
+	    sb.append(",  hash rate: " + String.format("%.1f", (freqM+1)*freqM1*(1-errorRate[freqM])*hashesPerClock )+"MH/s" );
 	    
-	sb.append(",  submitted " +submittedCount+" new nonces,  submitted hash rate " + String.format("%.1f",  submittedHashRate() ) + "MH/s");
+	sb.append(",  submitted " +submittedCount+" new nonces,  submitted hash rate " + String.format("%.1f", submittedHashRate() ) + "MH/s");
 	submittedCount = 0;
 	
 	printMsg(name + ": " + sb.toString());
@@ -1175,9 +1358,12 @@ class BTCMiner {
     private void getDescriptor () throws UsbException, FirmwareException {
 	byte[] buf = new byte[64];
         ztex.vendorRequest2( 0x82, "Read descriptor", 0, 0, buf, 64 );
-        if ( buf[0] != 2 ) {
-    	    throw new FirmwareException("Invalid BTCMiner descriptor version");
-        }
+        if ( buf[0] != 3 ) {
+            msg("Warning: Firmware out of date");
+    	    if ( buf[0] != 2 ) {
+    		throw new FirmwareException("Invalid BTCMiner descriptor version");
+    	    }
+    	}
         numNonces = (buf[1] & 255) + 1;
         offsNonces = ((buf[2] & 255) | ((buf[3] & 255) << 8)) - 10000;
         freqM1 = ( (buf[4] & 255) | ((buf[5] & 255) << 8) ) * 0.01;
@@ -1187,18 +1373,28 @@ class BTCMiner {
     	    freqM = freqMaxM;
         freqMDefault = freqM;
         
-        int i = 8;
+        hashesPerClock = buf[0] == 3 ? ( ( (buf[8] & 255) | ((buf[9] & 255) << 8) ) +1 )/128.0 : 1.0;
+        
+        int i0 = buf[0] == 3 ? 10 : 8;
+        int i = i0;
         while ( i<64 && buf[i]!=0 )
     	    i++;
-    	if ( i < 9)
+    	if ( i < i0+1)
     	    throw new FirmwareException("Invalid bitstream file name");
-    	bitFileName = new String(buf, 8, i-8);
+    	bitFileName = new String(buf, i0, i-i0);
+
+        if ( buf[0] != 3 ) {
+    	    if ( bitFileName.substring(0,13).equals("ztex_ufm1_15b") ) 
+    		hashesPerClock = 0.5;
+    	    msg( "Warning: HASHES_PER_CLOCK not defined, assuming " + hashesPerClock );
+    	}
     }
     
 // ******* checkUpdate **********************************************************
     public boolean checkUpdate() {
 	long t = new Date().getTime();
 	if ( ignoreErrorTime > t ) return false;
+	if ( newCount < newBlockMonitor.newCount) return true;
 	if ( disableTime[prevRpcNum] > t ) return true;
 	if ( lastGetWorkTime + maxPollInterval < t ) return true;
 	for ( int i=0; i<numNonces ; i++ )
@@ -1208,7 +1404,7 @@ class BTCMiner {
 
 // ******* descriptorInfo ******************************************************
     public String descriptorInfo () {
-	return "bitfile=" + bitFileName + "   f_default=" + String.format("%.2f",freqM1 * (freqMDefault+1)) + "MHz  f_max=" + String.format("%.2f",freqM1 * (freqMaxM+1))+ "MHz";
+	return "bitfile=" + bitFileName + "   f_default=" + String.format("%.2f",freqM1 * (freqMDefault+1)) + "MHz  f_max=" + String.format("%.2f",freqM1 * (freqMaxM+1))+ "MHz  HpC="+hashesPerClock+"H";
     }
     
 
@@ -1317,6 +1513,18 @@ class BTCMiner {
 		    } 
 		    catch (Exception e) {
 		        throw new ParameterException("<URL> <user name> <password> expected after -b");
+		    }
+		}
+	        else if ( args[i].equals("-lp") ) {
+	    	    i+=3;
+		    try {
+			if (i>=args.length) throw new Exception();
+    			longPollURL = args[i-2];
+    			longPollUser = args[i-1];
+    			longPollPassw = args[i];
+		    } 
+		    catch (Exception e) {
+		        throw new ParameterException("<URL> <user name> <password> expected after -lp");
 		    }
 		}
 	        else if ( args[i].equals("-f") ) {
@@ -1508,6 +1716,14 @@ class BTCMiner {
 	catch (Exception e) {
 	    System.out.println("Error: "+e.getLocalizedMessage() );
 	} 
+
+	if ( BTCMiner.newBlockMonitor != null ) {
+	    BTCMiner.newBlockMonitor.running = false;
+	    BTCMiner.newBlockMonitor.interrupt();
+	}
+	
+	System.exit(0);
+	
    } 
 
 }

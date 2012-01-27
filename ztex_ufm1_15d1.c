@@ -20,6 +20,7 @@
 #define[OFFS_NONCES][0]
 #define[F_MULT][24]
 #define[F_MAX_MULT][28]
+#define[HASHES_PER_CLOCK][128]
 #define[BITFILE_STRING]["ztex_ufm1_15d1"]
 
 #include[btcminer.h]

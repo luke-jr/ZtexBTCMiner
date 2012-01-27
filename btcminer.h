@@ -20,7 +20,7 @@
 #include[ztex-utils.h]	// include basic functions
 
 // configure endpoints 2 and 4, both belong to interface 0 (in/out are from the point of view of the host)
-EP_CONFIG(2,0,BULK,OUT,512,4);	 
+EP_CONFIG(2,0,BULK,OUT,512,2);	 
 
 // select ZTEX USB FPGA Module 1.15 as target (required for FPGA configuration)
 IDENTITY_UFM_1_15(10.0.1.1,0);	 
@@ -35,6 +35,11 @@ ENABLE_HS_FPGA_CONF(2);
 
 #define[F_MIN_MULT][13]
 #define[WATCHDOG_TIMEOUT][(300*100)]
+
+#ifndef[F_M1]
+#define[F_M1][800]
+#endif
+
 
 // !!!!! currently NUM_NONCES must not be larger than 2 !!!!!
 
@@ -81,14 +86,16 @@ __xdata BYTE buf_ptr1, buf_ptr2;
    ********************************************************************* */
 __code BYTE BitminerDescriptor[] = 
 {   
-    2,				// 0, version number
+    3,				// 0, version number
     NUM_NONCES*2-1,		// 1, number of nonces - 1
     (OFFS_NONCES+10000)&255,	// 2, ( nonce offset + 10000 ) & 255
     (OFFS_NONCES+10000)>>8,	// 3, ( nonce offset + 10000 ) >> 8
-    800 & 255,			// 4, frequency @ F_MULT=1 / 10kHz (LSB)
-    800 >> 8,			// 5, frequency @ F_MULT=1 / 10kHz (MSB)
+    F_M1 & 255,			// 4, frequency @ F_MULT=1 / 10kHz (LSB)
+    F_M1 >> 8,			// 5, frequency @ F_MULT=1 / 10kHz (MSB)
     F_MULT-1,			// 6, frequency multiplier - 1 (default)
     F_MAX_MULT-1,		// 7, max frequency multiplier - 1 
+    (HASHES_PER_CLOCK-1) & 255, // 8, (hashes_per_clck/128-1 ) & 266 
+    (WORD)(HASHES_PER_CLOCK-1) >> 8,  // 9, (hashes_per_clck/128-1 ) >> 8 
 };
 __code char bitfileString[] = BITFILE_STRING;
 __code BYTE bitFileStringTerm = 0;
@@ -358,8 +365,8 @@ void main(void)
     
 	watchdog_cnt += 1;
 	if ( watchdog_cnt > WATCHDOG_TIMEOUT ) {
-	    set_freq(0);	
 	    stopped = 1;
+	    IOC2 = 1;
 	}
 	
 	    

@@ -16,9 +16,9 @@
    along with this program; if not, see http://www.gnu.org/licenses/.
 !*/
 
-module ztex_ufm1_15d2 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dcm_progen,  rd_clk, wr_clk, wr_start, read, write);
+module ztex_ufm1_15d3 (fxclk_in, reset, clk_reset, pll_stop,  dcm_progclk, dcm_progdata, dcm_progen,  rd_clk, wr_clk, wr_start, read, write);
 
-	input fxclk_in, reset, pll_stop, dcm_progclk, dcm_progdata, dcm_progen, rd_clk, wr_clk, wr_start;
+	input fxclk_in, reset, clk_reset, pll_stop, dcm_progclk, dcm_progdata, dcm_progen, rd_clk, wr_clk, wr_start;
 	input [7:0] read;
 	output [7:0] write;
 
@@ -31,6 +31,7 @@ module ztex_ufm1_15d2 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
 	reg [7:0] read_buf, write_buf;
 	
 	wire fxclk, clk, dcm_clk, pll_fb, pll_clk0, dcm_locked, pll_reset;
+	wire [2:1] dcm_status;
 	wire [31:0] golden_nonce, nonce2, hash2;
 	
 	miner253 m (
@@ -54,30 +55,32 @@ module ztex_ufm1_15d2 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
         );
 
         DCM_CLKGEN #(
-	  .CLKFX_DIVIDE(6.0),
+	  .CLKFX_DIVIDE(4.0),
           .CLKFX_MULTIPLY(32),
-          .CLKFXDV_DIVIDE(2)
+          .CLKFXDV_DIVIDE(2),
+          .CLKIN_PERIOD(20.8333)
 	) 
 	dcm0 (
     	  .CLKIN(fxclk),
-          .CLKFX(dcm_clk),
+          .CLKFXDV(dcm_clk),
           .FREEZEDCM(1'b0),
           .PROGCLK(dcm_progclk_buf),
           .PROGDATA(dcm_progdata_buf),
           .PROGEN(dcm_progen_buf),
           .LOCKED(dcm_locked),
-          .RST(1'b0)
+          .STATUS(dcm_status),
+          .RST(clk_reset)
 	);
 
 	PLL_BASE #(
     	    .BANDWIDTH("LOW"),
-    	    .CLKFBOUT_MULT(3),
+    	    .CLKFBOUT_MULT(4),
     	    .CLKOUT0_DIVIDE(4),
     	    .CLKOUT0_DUTY_CYCLE(0.5),
     	    .CLK_FEEDBACK("CLKFBOUT"), 
-    	    .COMPENSATION("DCM2PLL"),
+    	    .COMPENSATION("INTERNAL"),
 	    .DIVCLK_DIVIDE(1),
-    	    .REF_JITTER(0.05),
+    	    .REF_JITTER(0.10),
 	    .RESET_ON_LOSS_OF_LOCK("FALSE")
        )
        pll0 (
@@ -89,7 +92,7 @@ module ztex_ufm1_15d2 (fxclk_in, reset, pll_stop,  dcm_progclk, dcm_progdata, dc
 	);
 
 	assign write = write_buf;
-	assign pll_reset = pll_stop | ~dcm_locked;
+	assign pll_reset = pll_stop | ~dcm_locked | clk_reset | dcm_status[2];
 	
 	always @ (posedge clk)
 	begin

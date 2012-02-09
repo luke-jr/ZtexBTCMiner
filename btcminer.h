@@ -33,11 +33,18 @@ ENABLE_HS_FPGA_CONF(2);
 // this product string is also used for identification by the host software
 #define[PRODUCT_STRING]["btcminer for ZTEX FPGA Modules"]
 
-#define[F_MIN_MULT][13]
 #define[WATCHDOG_TIMEOUT][(300*100)]
 
 #ifndef[F_M1]
 #define[F_M1][800]
+#endif
+
+#ifndef[F_DIV]
+#define[F_DIV][6]
+#endif
+
+#ifndef[F_MIN_MULT]
+#define[F_MIN_MULT][13]
 #endif
 
 
@@ -53,16 +60,20 @@ __xdata BYTE buf_ptr1, buf_ptr2;
 
 #define[PRE_FPGA_RESET][PRE_FPGA_RESET
     run = 0;
-    CPUCS &= ~bmBIT1;	// stop clock
+    OEC = bmBIT4;
+    IOC4 = 1;			// reset clocks
+    CPUCS &= ~bmBIT1;		// stop clock
 ]
 
 #define[POST_FPGA_CONFIG][POST_FPGA_CONFIG
-    IOC = bmBIT2;	// reset PLL
-    OEC = bmBIT0 | bmBIT1 | bmBIT2;
-    IOC = bmBIT2;	// reset PLL
+    IOC = bmBIT2 | bmBIT4;	// reset clocks
+    OEC = bmBIT0 | bmBIT1 | bmBIT2 | bmBIT4;
+    IOC = bmBIT2 | bmBIT4;	// reset clocks
     stopped = 1;
     
-    CPUCS |= bmBIT1;	// start clock
+    CPUCS |= bmBIT1;		// start clock
+    wait(20);
+    IOC4 = 0;
     
     OEA = bmBIT2 | bmBIT4 | bmBIT5 | bmBIT6 | bmBIT7;
     IOA = 0;
@@ -74,10 +85,11 @@ __xdata BYTE buf_ptr1, buf_ptr2;
 	IOA0 = 1;
     }
 
-    wait(100);
-    
+    wait(50);
+
     set_freq(0);
-    
+//    set_freq(F_MULT);
+
     run = 1;
 ]
 
@@ -86,7 +98,7 @@ __xdata BYTE buf_ptr1, buf_ptr2;
    ********************************************************************* */
 __code BYTE BitminerDescriptor[] = 
 {   
-    3,				// 0, version number
+    4,				// 0, version number
     NUM_NONCES*2-1,		// 1, number of nonces - 1
     (OFFS_NONCES+10000)&255,	// 2, ( nonce offset + 10000 ) & 255
     (OFFS_NONCES+10000)>>8,	// 3, ( nonce offset + 10000 ) >> 8
@@ -127,7 +139,7 @@ void set_freq ( BYTE f ) {
     PROGCLK = 1;
     PROGCLK = 0;
     
-    b = 5;
+    b = F_DIV - 1;
     for ( i=0; i<8; i++ ) {
 	PROGDATA = b & 1;
 	PROGCLK = 1;
@@ -181,13 +193,22 @@ void set_freq ( BYTE f ) {
     
     PROGEN = 0;
 
-    PROGCLK = 1;
-    PROGCLK = 0;
-    PROGCLK = 1;
-    PROGCLK = 0;
-    PROGCLK = 1;
-    PROGCLK = 0;
-    
+    _asm
+	mov r1,#50
+011000$:
+	mov r2,#0
+011001$:
+	setb _PROGCLK
+	clr _PROGCLK
+	setb _PROGCLK
+	clr _PROGCLK
+	setb _PROGCLK
+	clr _PROGCLK
+	setb _PROGCLK
+	clr _PROGCLK
+	djnz r2, 011001$
+	djnz r1, 011000$
+    __endasm;
 }    
 
    
@@ -267,7 +288,7 @@ ADD_EP0_VENDOR_REQUEST((0x82,,
 ADD_EP0_VENDOR_COMMAND((0x83,,
     IOC2 = 1;
     set_freq(SETUPDAT[2]);
-    wait(100);
+    wait(20);
     IOC2 = 0;
     stopped = 0;
     watchdog_cnt = 0;
@@ -361,14 +382,12 @@ void main(void)
 
 	    if ( is_ufm_1_15x )
 		IOA0 = stopped ? 1 : 0;
+
+	    watchdog_cnt += 1;
+	    if ( watchdog_cnt > WATCHDOG_TIMEOUT ) {
+		stopped = 1;
+		IOC2 = 1;
+	    }
 	}
-    
-	watchdog_cnt += 1;
-	if ( watchdog_cnt > WATCHDOG_TIMEOUT ) {
-	    stopped = 1;
-	    IOC2 = 1;
-	}
-	
-	    
     }
 }

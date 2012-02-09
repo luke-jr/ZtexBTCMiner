@@ -18,9 +18,13 @@
 
 #define[NUM_NONCES][1]
 #define[OFFS_NONCES][0]
-#define[F_MULT][25]
-#define[F_MAX_MULT][30]
+#define[F_MULT][141]
+#define[F_MAX_MULT][150]
 #define[HASHES_PER_CLOCK][128]
-#define[BITFILE_STRING]["ztex_ufm1_15d1"]
+#define[BITFILE_STRING]["ztex_ufm1_15d3"]
+
+#define[F_M1][141]
+#define[F_DIV][17]
+#define[F_MIN_MULT][71]
 
 #include[btcminer.h]

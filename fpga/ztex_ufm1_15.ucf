@@ -33,6 +33,7 @@ NET "read<7>"  LOC = "P19" | IOSTANDARD = LVCMOS33 ;  # PD7
 NET "reset"  LOC = "G20" | IOSTANDARD = LVCMOS33 ;     # PC0
 NET "rd_clk"  LOC = "T20" | IOSTANDARD = LVCMOS33 ;    # PC1
 NET "pll_stop"  LOC = "Y5" | IOSTANDARD = LVCMOS33 ;   # PC2
+NET "clk_reset"  LOC = "G19" | IOSTANDARD = LVCMOS33 ;   # PC4
 
 # unused
 #NET ""  LOC = "AB9" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;  # PC3

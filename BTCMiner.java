@@ -47,13 +47,14 @@ class ParameterException extends Exception {
 		"                      URL, user name and password of a backup server. Can be specified multiple times. \n"+
 		"    -lp <url> <user name> <password> \n" + 
 		"                      URL, user name and password of a long polling server (determined automatically by default) \n"+
-		"    -l	<log file>     Log file \n" +
+		"    -l <log file>     Log file \n" +
 		"    -lb <log file>    Log of submitted blocks file \n" +
 		"    -m s|t|p|c        Set single mode, test mode, programming mode or cluster mode\n"+
 		"                      Single mode: runs BTCMiner on a single board (default mode)\n" +
 		"                      Test mode: tests a board using some test data\n" +
 		"                      Programming mode: programs device with the given firmware\n" +
 		"                      Cluster mode: runs BTCMiner on all programmed boards\n" +
+		"    -ep0              Always use slow EP0 for Bitstream transfer\n" +
 		"    -v                Be verbose\n" +
 		"    -h                This help\n" +
 		"Parameters in single mode, test mode and programming mode\n"+
@@ -65,7 +66,8 @@ class ParameterException extends Exception {
 		"Parameters in programming mode\n"+
 		"    -pt <string>      Program devices of the given type (default: program unconfigured devices)\n" +
 		"    -ps <string>      Program devices with the given serial number (default: program unconfigured devices)\n" +
-		"    -s                Set serial number\n"
+		"    -s                Set serial number\n" +
+		"    -rf               Erase firmware in EEPROM (overwrites -f, requires -pt or -ps)\n"
 	);
 		
     
@@ -148,6 +150,7 @@ class NewBlockMonitor extends Thread implements MsgObj {
 	running = true;
 	
 	boolean enableLP = true;
+	boolean warnings = true;
 	long enableLPTime = 0;
 
 	while ( running ) {
@@ -173,15 +176,17 @@ class NewBlockMonitor extends Thread implements MsgObj {
 			enableLPTime = new Date().getTime() + 60000;
 		    }
 		}
-		catch ( ParserException e ) {
-		    msg("Warning: " + e.getLocalizedMessage());
+		catch ( Exception e ) {
+		    if ( warnings )
+			msg("Warning: " + e.getLocalizedMessage());
+		    warnings = false;
 		}
 	    }
 	    
 	    if ( BTCMiner.longPollURL==null )
 		enableLPTime = new Date().getTime() + 2000;
 	    
-	    t = minLongPollInterval - new Date().getTime();
+	    t += minLongPollInterval - new Date().getTime();
 	    if ( t > 5 ) {
 		try {
 		    Thread.sleep( t );
@@ -490,10 +495,9 @@ class PollLoop {
 	
 	while ( v.size()>0 ) {
 	    long t0 = new Date().getTime();
+	    long tu = 0;
 
 	    if ( ! scanMode ) {
-		long tu = 0;
-		
 		synchronized ( v ) {
 		    for ( int i=v.size()-1; i>=0; i-- ) {
 			BTCMiner m = v.elementAt(i);
@@ -541,8 +545,10 @@ class PollLoop {
 		networkTime = networkTime * 0.9998 + t0 - tu;
 		timeW = timeW * 0.9998 + 1;
 	    }
+	    else {
+		t0 = 0;
+	    }
 	    
-
 	    t0 = minQueryInterval - t0;
 	    if ( t0 > 5 ) {
 		try {
@@ -610,6 +616,8 @@ class BTCMiner implements MsgObj  {
     static double connectionEffort = 2.0;
     
     static NewBlockMonitor newBlockMonitor = null;
+    
+    static boolean forceEP0Config = false;
     
 // ******* printMsg *************************************************************
     public static void printMsg ( String msg ) {
@@ -793,10 +801,10 @@ class BTCMiner implements MsgObj  {
 	try {
 	    Ztex1v1 ztex = new Ztex1v1 ( pDev );
     	    ztex.vendorRequest2( 0x82, "Read descriptor", 0, 0, buf, 64 );
-    	    if ( buf[0] < 1 || buf[0] > 3 ) 
+    	    if ( buf[0] < 1 || buf[0] > 4 ) 
     		throw new FirmwareException("Invalid BTCMiner descriptor version");
 
-	    int i0 = buf[0] == 3 ? 10 : 8;
+	    int i0 = buf[0] > 2 ? 10 : 8;
     	    int i = i0;
     	    while ( i<64 && buf[i]!=0 )
     		i++;
@@ -881,6 +889,7 @@ class BTCMiner implements MsgObj  {
 	verbose = v;
 
 	ztex  = new Ztex1v1 ( pDev );
+	ztex.enableExtraFpgaConfigurationChecks = true;
 
         if ( firmwareFile != null ) {
     	    try {
@@ -907,7 +916,7 @@ class BTCMiner implements MsgObj  {
 //    	if ( d < maxPollInterval ) maxPollInterval=d;
 
     	try {
-	    msg("FPGA configuration time: " + ztex.configureFpga( "fpga/"+bitFileName+".bit" , true, 2 ) + " ms");
+	    msg("FPGA configuration time: " + ( forceEP0Config ? ztex.configureFpgaLS( "fpga/"+bitFileName+".bit" , true, 2 ) : ztex.configureFpga( "fpga/"+bitFileName+".bit" , true, 2 ) ) + " ms");
 	    
     	    try {
 	        Thread.sleep( 10 );
@@ -1016,7 +1025,7 @@ class BTCMiner implements MsgObj  {
         if ( str != null && ! str.equals("") && longPollURL==null ) {
     	    synchronized ( BTCMiner.newBlockMonitor ) {
     		if ( longPollURL==null ) {
-    		    longPollURL = url+str;
+    		    longPollURL = str.substring(0,4).equalsIgnoreCase("http") ? str : url+str;
     		    msgObj.msg("Using LongPolling URL " + longPollURL);
     		    longPollUser = user;
     		    longPollPassw = passw;
@@ -1343,10 +1352,12 @@ class BTCMiner implements MsgObj  {
 /*	if ( freqM<255 && (errorWeight[freqM+1]>100.1 || maxErrorRate[freqM+1]>0.001 ) )
 	    sb.append(",  nextMaxErrorRate="+ String.format("%.2f",maxErrorRate[freqM+1]*100)+"%"); */
 
+	double hr = (freqM+1)*freqM1*(1-errorRate[freqM])*hashesPerClock;
+
 	if ( errorWeight[freqM]>20 )
-	    sb.append(",  hash rate: " + String.format("%.1f", (freqM+1)*freqM1*(1-errorRate[freqM])*hashesPerClock )+"MH/s" );
+	    sb.append(",  hashRate=" + String.format("%.1f", hr )+"MH/s" );
 	    
-	sb.append(",  submitted " +submittedCount+" new nonces,  submitted hash rate " + String.format("%.1f", submittedHashRate() ) + "MH/s");
+	sb.append(",  submitted " +submittedCount+" new nonces,  luckFactor=" + String.format("%.2f", submittedHashRate()/hr+0.0049 ));
 	submittedCount = 0;
 	
 	printMsg(name + ": " + sb.toString());
@@ -1358,11 +1369,11 @@ class BTCMiner implements MsgObj  {
     private void getDescriptor () throws UsbException, FirmwareException {
 	byte[] buf = new byte[64];
         ztex.vendorRequest2( 0x82, "Read descriptor", 0, 0, buf, 64 );
-        if ( buf[0] != 3 ) {
-            msg("Warning: Firmware out of date");
+        if ( buf[0] != 4 ) {
     	    if ( buf[0] != 2 ) {
-    		throw new FirmwareException("Invalid BTCMiner descriptor version");
+    		throw new FirmwareException("Invalid BTCMiner descriptor version. Firmware must be updated.");
     	    }
+            msg("Warning: Firmware out of date");
     	}
         numNonces = (buf[1] & 255) + 1;
         offsNonces = ((buf[2] & 255) | ((buf[3] & 255) << 8)) - 10000;
@@ -1373,9 +1384,9 @@ class BTCMiner implements MsgObj  {
     	    freqM = freqMaxM;
         freqMDefault = freqM;
         
-        hashesPerClock = buf[0] == 3 ? ( ( (buf[8] & 255) | ((buf[9] & 255) << 8) ) +1 )/128.0 : 1.0;
+        hashesPerClock = buf[0] == 4 ? ( ( (buf[8] & 255) | ((buf[9] & 255) << 8) ) +1 )/128.0 : 1.0;
         
-        int i0 = buf[0] == 3 ? 10 : 8;
+        int i0 = buf[0] == 4 ? 10 : 8;
         int i = i0;
         while ( i<64 && buf[i]!=0 )
     	    i++;
@@ -1383,7 +1394,7 @@ class BTCMiner implements MsgObj  {
     	    throw new FirmwareException("Invalid bitstream file name");
     	bitFileName = new String(buf, i0, i-i0);
 
-        if ( buf[0] != 3 ) {
+        if ( buf[0] != 4 ) {
     	    if ( bitFileName.substring(0,13).equals("ztex_ufm1_15b") ) 
     		hashesPerClock = 0.5;
     	    msg( "Warning: HASHES_PER_CLOCK not defined, assuming " + hashesPerClock );
@@ -1419,6 +1430,7 @@ class BTCMiner implements MsgObj  {
         String firmwareFile = null, snString = null;
         boolean printBus = false;
         boolean verbose = false;
+        boolean eraseFirmware = false;
 
         String filterType = null, filterSN = null;
         
@@ -1582,6 +1594,12 @@ class BTCMiner implements MsgObj  {
 		else if ( args[i].equals("-v") ) {
 		    verbose = true;
 		} 
+		else if ( args[i].equals("-rf") ) {
+		    eraseFirmware = true;
+		} 
+		else if ( args[i].equals("-ep0") ) {
+		    forceEP0Config = true;
+		} 
 		else if ( args[i].equals("-h") ) {
 		        System.err.println(ParameterException.helpMsg);
 	    	        System.exit(0);
@@ -1666,6 +1684,9 @@ class BTCMiner implements MsgObj  {
 		}
 	    }
 	    else if ( mode == 'p' ) {
+		if ( eraseFirmware && filterType == null && filterSN == null ) 
+		    throw new ParameterException("-rf requires -pt or -ps");
+		    
 		ZtexScanBus1 bus = ( filterType == null && filterSN == null ) 
 			? new ZtexScanBus1( ZtexDevice1.cypressVendorId, ZtexDevice1.cypressProductId, true, false, 1)
 			: new ZtexScanBus1( ZtexDevice1.ztexVendorId, ZtexDevice1.ztexProductId, false, false, 1,  null, 10, 0, 1, 0 );
@@ -1677,8 +1698,8 @@ class BTCMiner implements MsgObj  {
 	    	    bus.printBus(System.out);
 	    	    System.exit(0);
 		}
-		if ( firmwareFile == null )
-		    throw new Exception("Parameter -f required in programming mode");
+		if ( firmwareFile == null && !eraseFirmware )
+		    throw new Exception("Parameter -f or -rf required in programming mode");
 
 		int imin=0, imax=bus.numberOfDevices()-1;
 		if ( devNum >= 0 ) {
@@ -1686,7 +1707,7 @@ class BTCMiner implements MsgObj  {
 		    imax=devNum;
 		}
 		
-	        ZtexIhxFile1 ihxFile = new ZtexIhxFile1( firmwareFile );
+	        ZtexIhxFile1 ihxFile = eraseFirmware ? null : new ZtexIhxFile1( firmwareFile );
 		    
 		int j = 0;
 		for (int i=imin; i<=imax; i++ ) {
@@ -1694,14 +1715,20 @@ class BTCMiner implements MsgObj  {
 		    if ( ( filterSN == null || filterSN.equals(dev.snString()) ) &&
 			 ( filterType == null || filterType.equals(getType(dev)) ) ) {
 			Ztex1v1 ztex = new Ztex1v1 ( dev );
-			if ( snString != null ) 
+			if ( snString != null && ihxFile != null ) 
 			    ihxFile.setSnString( snString );
-			else if ( ztex.valid() )
+			else if ( ztex.valid() && ihxFile != null )
 			    ihxFile.setSnString( dev.snString() );
-			System.out.println("\nold: "+ztex.toString());
-	    		System.out.println("Firmware upload time: " + ztex.uploadFirmware( ihxFile, false ) + " ms");
-			System.out.println("EEPROM programming time: " + ztex.eepromUpload( ihxFile, false ) + " ms");
-			System.out.println("new: " + ztex.toString());
+			if ( eraseFirmware ) {
+			    ztex.eepromDisable();
+			    System.out.println("EEPROM erased: " + ztex.toString());
+			}
+			else {
+			    System.out.println("\nold: "+ztex.toString());
+	    		    System.out.println("Firmware upload time: " + ztex.uploadFirmware( ihxFile, false ) + " ms");
+			    System.out.println("EEPROM programming time: " + ztex.eepromUpload( ihxFile, false ) + " ms");
+			    System.out.println("new: " + ztex.toString());
+			}
 		    j+=1;
 		    }
 		}

@@ -55,6 +55,8 @@ class ParameterException extends Exception {
 		"                      Programming mode: programs device with the given firmware\n" +
 		"                      Cluster mode: runs BTCMiner on all programmed boards\n" +
 		"    -ep0              Always use slow EP0 for Bitstream transfer\n" +
+		"    -oh               Overheat threshold: if the frequency drops by that factor (but at least two frequency stpes)\n"+
+		"                      the overheat shutdown is triggered (default: 0.05, recommended: 0 to 0.1) \n"+
 		"    -v                Be verbose\n" +
 		"    -h                This help\n" +
 		"Parameters in single mode, test mode and programming mode\n"+
@@ -324,7 +326,7 @@ class BTCMinerCluster {
 		    BTCMiner m = allMiners.elementAt(i);
 		    m.printInfo( true );
 		    d+=m.submittedHashRate();
-		    e+=(m.freqM+1)*m.freqM1*(1-m.errorRate[m.freqM])*m.hashesPerClock;
+		    e+=m.totalHashRate();
 		}
 		for ( int i=0; i<threads.size(); i++ )
 		    threads.elementAt(i).printInfo();
@@ -619,6 +621,8 @@ class BTCMiner implements MsgObj  {
     
     static boolean forceEP0Config = false;
     
+    static double overheatThreshold = 0.05;
+    
 // ******* printMsg *************************************************************
     public static void printMsg ( String msg ) {
 	System.out.println( msg );
@@ -878,8 +882,9 @@ class BTCMiner implements MsgObj  {
     public double[] errorWeight = new double[256];
     public double[] errorRate = new double[256];
     public double[] maxErrorRate = new double[256];
-    public final double maxMaxErrorRate = 0.1;
+    public final double maxMaxErrorRate = 0.05;
     public final double errorHysteresis = 0.1; // in frequency steps
+    
 
 // ******* BTCMiner ************************************************************
 // constructor
@@ -1025,7 +1030,7 @@ class BTCMiner implements MsgObj  {
         if ( str != null && ! str.equals("") && longPollURL==null ) {
     	    synchronized ( BTCMiner.newBlockMonitor ) {
     		if ( longPollURL==null ) {
-    		    longPollURL = str.substring(0,4).equalsIgnoreCase("http") ? str : url+str;
+    		    longPollURL = (str.length()>7 && str.substring(0,4).equalsIgnoreCase("http") ) ? str : url+str;
     		    msgObj.msg("Using LongPolling URL " + longPollURL);
     		    longPollUser = user;
     		    longPollPassw = passw;
@@ -1227,12 +1232,18 @@ class BTCMiner implements MsgObj  {
 
 // ******* updateFreq **********************************************************
     public void updateFreq() throws UsbException {
+
+	for ( int i=0; i<freqMaxM; i++ )  {
+	    if ( maxErrorRate[i+1]*i < maxErrorRate[i]*(i+20) )
+		maxErrorRate[i+1] = maxErrorRate[i]*(1.0+20.0/i);
+	}
+
 	int maxM = 0;
 	while ( maxM<freqMDefault && maxErrorRate[maxM+1]<maxMaxErrorRate )
 	    maxM++;
 	while ( maxM<freqMaxM && errorWeight[maxM]>150 && maxErrorRate[maxM+1]<maxMaxErrorRate )
 	    maxM++;
-
+	    
 	int bestM=0;
 	double bestR=0;
 	for ( int i=0; i<=maxM; i++ )  {
@@ -1247,6 +1258,18 @@ class BTCMiner implements MsgObj  {
 	    freqM = bestM;
 	    msg ( "Set frequency to " + String.format("%.2f",(freqM+1)*(freqM1)) +"MHz" );
 	    setFreq( freqM );
+	}
+
+	maxM = freqMDefault;
+	while ( maxM<freqMaxM && errorWeight[maxM+1]>100 )
+	    maxM++;
+	if ( ( bestM < (1.0-overheatThreshold ) * maxM ) && bestM < maxM-1 )  {
+	    try {
+		ztex.resetFpga();
+	    }
+	    catch ( Exception e ) {
+	    }
+	    throw new UsbException("Frequency drop of " + String.format("%.1f",(1.0-1.0*bestM/maxM)*100) + "% detect. This may be caused by overheating. FPGA is shut down to prevent damage.");
 	}
     }
 
@@ -1325,6 +1348,11 @@ class BTCMiner implements MsgObj  {
         return false;
     }
 
+// ******* totalHashRate *******************************************************
+    public double totalHashRate () {
+	return fatalError == null ? (freqM+1)*freqM1*(1-errorRate[freqM])*hashesPerClock : 0;
+    }
+    
 // ******* submittedHashRate ***************************************************
     public double submittedHashRate () {
 	return fatalError == null ? 4.294967296e6 * totalSubmittedCount / (new Date().getTime()-startTime) : 0;
@@ -1346,7 +1374,7 @@ class BTCMiner implements MsgObj  {
 	if ( errorWeight[freqM]>20 )
 	    sb.append(",  errorRate="+ String.format("%.2f",errorRate[freqM]*100)+"%");
 
-	if ( errorWeight[freqM]>100.1 || maxErrorRate[freqM]>0.001 )
+	if ( errorWeight[freqM]>100 )
 	    sb.append(",  maxErrorRate="+ String.format("%.2f",maxErrorRate[freqM]*100)+"%");
 
 /*	if ( freqM<255 && (errorWeight[freqM+1]>100.1 || maxErrorRate[freqM+1]>0.001 ) )
@@ -1614,8 +1642,20 @@ class BTCMiner implements MsgObj  {
 		        throw new ParameterException("Number expected after -n");
 		    }
 		}
+	        else if ( args[i].equals("-oh") ) {
+	    	    i++;
+		    try {
+			if (i>=args.length) throw new Exception();
+    			overheatThreshold = Double.parseDouble( args[i] );
+		    } 
+		    catch (Exception e) {
+		        throw new ParameterException("Number expected after -oh");
+		    }
+		}
 		else throw new ParameterException("Invalid Parameter: "+args[i]);
 	    }
+
+    	    if ( overheatThreshold > 0.1001 ) System.err.println("Warning: overheat threshold set to " + overheatThreshold +": overheat shutdown may be triggered too late, recommended values: 0..0.1");
 	    
 	    if ( BTCMinerCluster.maxDevicesPerThread < 1 )
 		BTCMinerCluster.maxDevicesPerThread = 127;

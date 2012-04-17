@@ -13,13 +13,13 @@ CLASSTARGETS=BTCMiner.class
 CLASSEXTRADEPS=
 
 # ihx files (firmware ROM files) that have to be build 
-IHXTARGETS=ztex_ufm1_15d1.ihx ztex_ufm1_15b1.ihx ztex_ufm1_15d3.ihx ztex_ufm1_15d3a.ihx ztex_ufm1_15d3b.ihx
+IHXTARGETS=ztex_ufm1_15b1.ihx ztex_ufm1_15d4.ihx ztex_ufm1_15y1.ihx ztex_ufm1_15d.ihx ztex_ufm1_15y.ihx
 # Extra Dependencies for ihx files
 IHXEXTRADEPS=btcminer.h
 
 # Extra files that should be included into th jar archive
 EXTRAJARFLAGS=
-EXTRAJARFILES=ztex_ufm1_15b1.ihx ztex_ufm1_15d1.ihx ztex_ufm1_15d3.ihx ztex_ufm1_15d3a.ihx ztex_ufm1_15d3b.ihx fpga/ztex_ufm1_15b1.bit fpga/ztex_ufm1_15d1.bit fpga/ztex_ufm1_15d3.bit
+EXTRAJARFILES=$(IHXTARGETS) fpga/ztex_ufm1_15b1.bit fpga/ztex_ufm1_15d1.bit fpga/ztex_ufm1_15d3.bit fpga/ztex_ufm1_15d4.bit fpga/ztex_ufm1_15y1.bit
 # fpga/ztex_ufm1_15d.bit
 
 ################################

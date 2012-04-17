@@ -17,6 +17,7 @@
 !*/
 
 #define[NUM_NONCES][1]
+#define[EXTRA_SOLUTIONS][0]
 #define[OFFS_NONCES][130]
 #define[F_MULT][23]
 #define[F_MAX_MULT][28]

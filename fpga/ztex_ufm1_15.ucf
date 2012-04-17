@@ -63,3 +63,15 @@ NET "clk_reset"  LOC = "G19" | IOSTANDARD = LVCMOS33 ;   # PC4
 # TIG's
 NET "inbuf[*]" TIG;
 NET "m/golden_nonce[*]" TIG;
+
+############################################################################
+# LEDS 
+############################################################################
+#NET "LED<0>"  LOC = "R1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<1>"  LOC = "T1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<2>"  LOC = "U1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<3>"  LOC = "V1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<4>"  LOC = "W1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<5>"  LOC = "Y1" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<6>"  LOC = "AB2" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;
+#NET "LED<7>"  LOC = "AA2" | IOSTANDARD = LVCMOS33 | DRIVE = 12 ;

@@ -17,14 +17,16 @@
 !*/
 
 #define[NUM_NONCES][1]
+#define[EXTRA_SOLUTIONS][1]
 #define[OFFS_NONCES][0]
-#define[F_MULT][145]
-#define[F_MAX_MULT][160]
+#define[F_MULT][50]
+//#define[F_MAX_MULT][54]
+#define[F_MAX_MULT][60]
 #define[HASHES_PER_CLOCK][128]
-#define[BITFILE_STRING]["ztex_ufm1_15d3"]
+#define[BITFILE_STRING]["ztex_ufm1_15d4"]
 
-#define[F_M1][141]
-#define[F_DIV][17]
-#define[F_MIN_MULT][71]
+#define[F_M1][400]
+#define[F_DIV][6]
+#define[F_MIN_MULT][25]
 
 #include[btcminer.h]

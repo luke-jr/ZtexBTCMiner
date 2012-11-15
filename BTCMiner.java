@@ -18,7 +18,7 @@
 
 /* TODO: 
  * HUP signal
- * input2
+ * difficulity > 1
  */  
  
 
@@ -58,10 +58,12 @@ class ParameterException extends Exception {
 		"                      Cluster mode: runs BTCMiner on all programmed boards\n" +
 		"    -ep0              Always use slow EP0 for Bitstream transfer\n" +
 		"    -oh <number>      Overheat threshold: if the hash rate drops by that factor (but at least two frequency steps)\n"+
-		"                      the overheat shutdown is triggered (default: 0.04, recommended: 0 to 0.08) \n"+
+		"                      the overheat shutdown is triggered (default: 0.04, recommended: 0 to 0.08)\n"+
+		"    -t <number>       Temperature limit (in °C, default 70°C)\n" +
 		"    -ps <string>      Select devices with the given serial number,\n" +
 		"                      in cluster mode: select devices which serial number starts with the given string\n" +
 		"    -e <number>       Maximum error rate\n"+
+		"    -tc               Enable target check (disabled by default)\n" + 
 		"    -v                Be verbose\n" +
 		"    -h                This help\n" +
 		"Parameters in single mode, test mode and programming mode\n"+
@@ -125,6 +127,8 @@ class NewBlockMonitor extends Thread implements MsgObj {
     
     private Vector<LogString> logBuf = new Vector<LogString>();
     
+    public static boolean submitOld;
+    
 // ******* constructor *********************************************************
     public NewBlockMonitor( ) {
 	start();
@@ -143,6 +147,7 @@ class NewBlockMonitor extends Thread implements MsgObj {
 	}
 	if ( n ) {
 	    newCount += 1;
+	    submitOld = true;
 	    if ( newCount > 0 )
 		msg("New block detected by block monitor");
 	}
@@ -157,6 +162,8 @@ class NewBlockMonitor extends Thread implements MsgObj {
 	boolean enableLP = true;
 	boolean warnings = true;
 	long enableLPTime = 0;
+	
+	submitOld = true;
 
 	while ( running ) {
 	    long t = new Date().getTime();
@@ -164,12 +171,23 @@ class NewBlockMonitor extends Thread implements MsgObj {
 	    if ( BTCMiner.longPollURL!=null && enableLP && t>enableLPTime) {
 		try {
 //		    msg("info: LP");
-		    BTCMiner.hexStrToData(BTCMiner.jsonParse(BTCMiner.bitcoinRequest(this, BTCMiner.longPollURL, BTCMiner.longPollUser, BTCMiner.longPollPassw, "getwork", ""), "data"), dataBuf);
+		    String req = BTCMiner.bitcoinRequest(this, BTCMiner.longPollURL, BTCMiner.longPollUser, BTCMiner.longPollPassw, "getwork", "");
+		    BTCMiner.hexStrToData(BTCMiner.jsonParse(req, "data"), dataBuf);
+		    submitOld = true;
+		    String so = null;
+		    try {
+			so = BTCMiner.jsonParse(req, "submitold");
+			if ( so.equalsIgnoreCase("false") )
+			    submitOld = false;
+		    }
+		    catch ( Exception e ) {
+		    }
+		    
 		    for ( int i=0; i<32; i++ ) {
 			prevBlock[i] = dataBuf[i+4];
 		    }
 		    newCount += 1;
-		    msg("New block detected by long polling");
+		    msg( "New block detected by long polling" + ( so == null ? "" : " (submitold = " + so + ")" ) );
 		}
 		catch ( MalformedURLException e ) {
 		    msg("Warning: " + e.getLocalizedMessage() + ": disabling long polling");
@@ -746,6 +764,10 @@ class BTCMiner implements MsgObj  {
 
     static double maxMaxErrorRate = 0.05;
     
+    static double tempLimit = 65;  // in °C
+    
+    static boolean targetCheck = false;
+    
     static String filterSN = null;
 
     public static final String[] dummyFirmwareNames = {
@@ -1056,6 +1078,19 @@ class BTCMiner implements MsgObj  {
       intToData( H+dataToInt(state,state_offs+28), out, out_offs+28 );
    }
 
+    public static void printBus ( ZtexScanBus1 bus ) {
+	for (int i=0; i<bus.numberOfDevices(); i++ ) {
+	    ZtexDevice1 dev = bus.device(i);
+	    System.out.println( i + ": " + dev.toString() );
+	    try {
+	        byte buf[] = new byte[6];
+	        new Ztex1v1(dev).macRead(buf);
+	        System.out.println("   MAC address: " + dataToHexStr(buf)); 
+	    }
+	    catch (Exception e) {
+	    }
+	}
+    }
 
 // *****************************************************************************
 // ******* non-static methods **************************************************
@@ -1087,6 +1122,8 @@ class BTCMiner implements MsgObj  {
     private byte[] midstateBuf = new byte[32];
     private byte[] sendBuf = new byte[44];
     private byte[] hashBuf = hexStrToData("00000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000010000");
+    private byte[] targetBuf = hexStrToData("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000");
+    private double difficulity = 1.0;
     
     private int newCount = 0;
 
@@ -1097,7 +1134,8 @@ class BTCMiner implements MsgObj  {
     
     public int[] lastGoldenNonces = { 0, 0, 0, 0, 0, 0, 0, 0 };
     public int[] goldenNonce, nonce, hash7;
-    public int submittedCount = 0,  totalSubmittedCount = 0;
+    public int submittedCount = 0;
+    public double totalSubmittedCount = 0.0;
     public long startTime, startTimeAdjust;
     
     public int overflowCount = 0;
@@ -1124,25 +1162,26 @@ class BTCMiner implements MsgObj  {
     
     private int numberOfFpgas = 0;
     private int[] fpgaMap;
-
+    
 // ******* BTCMiner ************************************************************
 // constructor
-    public BTCMiner ( ZtexDevice1 pDev, String firmwareFile, boolean v ) throws UsbException, FirmwareException, NoSuchAlgorithmException {
+    public BTCMiner ( Ztex1v1 pZtex, String firmwareFile, boolean v ) throws UsbException, FirmwareException, NoSuchAlgorithmException {
 	
 	digest = MessageDigest.getInstance("SHA-256");
 	verbose = v;
 
-	ztex  = new Ztex1v1 ( pDev );
+	ztex = pZtex;
+	ztex.tempSensorUpdateInterval = 1000;
 	ztex.enableExtraFpgaConfigurationChecks = true;
 
 	String snString=null;
-	if ( ( pDev.productId(2)==0) && (firmwareFile==null) ) {
+	if ( ( ztex.dev().productId(2)==0) && (firmwareFile==null) ) {
 	    for ( int j=0; j<defaultFirmwarePID1.length; j++ )
-		if ( defaultFirmwarePID1[j]==pDev.productId(1) && pDev.productString().equals(dummyFirmwareNames[j]) ) 
+		if ( defaultFirmwarePID1[j]==ztex.dev().productId(1) && ztex.dev().productString().equals(dummyFirmwareNames[j]) ) 
 		    firmwareFile = firmwareFiles[j];
 	    if ( firmwareFile != null ) {
-	        msg("Using firmware `" + firmwareFile + "'" + " for `" + pDev.productString() +"'" );
-	        snString = pDev.snString();
+	        msg("Using firmware `" + firmwareFile + "'" + " for `" + ztex.dev().productString() +"'" );
+	        snString = ztex.dev().snString();
 	    }
 	}
 
@@ -1238,6 +1277,12 @@ class BTCMiner implements MsgObj  {
 	}
 	
     }
+
+
+    public BTCMiner ( ZtexDevice1 pDev, String firmwareFile, boolean v ) throws UsbException, FirmwareException, NoSuchAlgorithmException {
+	this ( new Ztex1v1 ( pDev ), firmwareFile, v );
+    }
+    
 
     public BTCMiner ( Ztex1v1 pZtex, int pFpgaNum, boolean v ) throws UsbException, FirmwareException, NoSuchAlgorithmException {
 	digest = MessageDigest.getInstance("SHA-256");
@@ -1359,6 +1404,7 @@ class BTCMiner implements MsgObj  {
         con.setRequestProperty("Content-Type", "application/json");
 	con.setRequestProperty("Cache-Control", "no-cache");
         con.setRequestProperty("User-Agent", "ztexBTCMiner");
+        con.setRequestProperty("X-Mining-Extensions", "longpoll midstate submitold");
         con.setRequestProperty("Content-Length", "" + request.length());
         con.setUseCaches(false);
         con.setDoInput(true);
@@ -1453,25 +1499,40 @@ class BTCMiner implements MsgObj  {
 	catch ( NumberFormatException e ) {
 	}
 
+	if ( newCount >= newBlockMonitor.newCount || newBlockMonitor.submitOld ) {
+	    while ( getNonces() ) {}
+        }
+
 	newCount = newBlockMonitor.newCount;
 	
-//	if ( newCount == newBlockMonitor.newCount ) {
-//	    try {
-	        while ( getNonces() ) {}
-//	    }
-//	    catch ( IOException e )
-//	        ioErrorCount[rpcNum]++;
-//	    }
-//	}
-	
-	
-        try {
+	try {
 	    hexStrToData(jsonParse(response,"data"), dataBuf);
-	    hexStrToData(jsonParse(response,"midstate"), midstateBuf);
 	}
 	catch ( NumberFormatException e ) {
 	    throw new ParserException( e.getLocalizedMessage() );
 	}
+
+	
+	
+	try {
+	    if ( targetCheck ) {
+		hexStrToData(jsonParse(response,"target"), targetBuf);
+	    }
+	    else {
+		hexStrToData("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000", targetBuf);
+	    }
+	}
+	catch ( Exception e ) {
+	    hexStrToData("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000", targetBuf);	
+	}
+	
+	double d = 1.0;
+	difficulity = 0;
+	for (int j=0; j<28; j++) {
+	    difficulity += (targetBuf[j] & 255) * d;
+	    d*=256;
+	}
+	difficulity = d / difficulity;
 
 	boolean b = false;
 	int k = dataBuf.length - sha256_pad1.length;
@@ -1484,15 +1545,7 @@ class BTCMiner implements MsgObj  {
 	    msg("Warning: Invalid data from " + rpcurl[rpcNum]);
 
 
-	sha256_transform( sha256_init_state,0, dataBuf,0, hashBuf,0);
-	b = false;
-	for ( int j=0; j<32; j++ ) 
-	    if ( hashBuf[j] != midstateBuf[j] ) {
-		b=true;
-		midstateBuf[j] = hashBuf[j];
-	    }
-	if ( b ) 
-	    msg("Warning: Invalid midstate from " + rpcurl[rpcNum]);
+	sha256_transform( sha256_init_state,0, dataBuf,0, midstateBuf,0);
 		
 	lastGetWorkTime = new Date().getTime();
 	prevRpcNum = i;
@@ -1545,6 +1598,21 @@ class BTCMiner implements MsgObj  {
 	sha256_transform( midstateBuf,0, dataBuf,64, hashBuf,0 );
 	sha256_transform( sha256_init_state,0, hashBuf,0, hashBuf,0 );
 	return dataToInt( hashBuf,28 );
+    } 
+
+// ******* compareWithTarget ***************************************************
+    // returns true if smaller than target
+    public boolean compareWithTarget(int n) throws NumberFormatException {
+	intToData(n, dataBuf, 76);
+	sha256_transform( midstateBuf,0, dataBuf,64, hashBuf,0 );
+	sha256_transform( sha256_init_state,0, hashBuf,0, hashBuf,0 );
+	for ( int i=31; i>=0; i-- ) {
+	    if ( (hashBuf[i] & 255) < (targetBuf[i] & 255) )
+		return true;
+	    if ( (hashBuf[i] & 255) > (targetBuf[i] & 255) )
+		return false;
+	}
+	return true;
     }
 
 // ******* getMidstate *********************************************************
@@ -1663,6 +1731,26 @@ class BTCMiner implements MsgObj  {
 	    }
 	    throw new UsbException("Hash rate drop of " + String.format("%.1f",(1.0-1.0*(bestM+1)/maxHashRate)*100) + "% detect. This may be caused by overheating. FPGA is shut down to prevent damage." );
 	}
+	
+	double temp;
+	try { 
+	    temp = ztex.tempSensorRead(fpgaNum);
+	}	    
+	catch ( Exception e ) {
+	    temp = tempLimit - 1e12;
+	}
+	if ( temp > tempLimit ) {
+	    try {
+		synchronized (ztex) {
+		    selectFpga();
+		    ztex.resetFpga();
+		}
+	    }
+	    catch ( Exception e ) {
+	    }
+	    throw new UsbException("Overheating detected: T=" + String.format("%.1f",temp) + "°C. FPGA is shut down to prevent damage." );
+	}
+
     }
 
 // ******* getNonces ***********************************************************
@@ -1692,14 +1780,14 @@ class BTCMiner implements MsgObj  {
         for ( int i=0; i<numNonces*(1+extraSolutions); i++ ) {
     	    int n = goldenNonce[i];
     	    if ( n != -offsNonces ) {
-    		if ( getHash(n) == 0 ) {
+    		if ( compareWithTarget(n) ) {
     		    int j=0;
     		    while ( j<lastGoldenNonces.length && lastGoldenNonces[j]!=n )
     			j++;
         	    if  (j>=lastGoldenNonces.length) {
         	        submitWork( n );
         		submittedCount+=1;
-        		totalSubmittedCount+=1;
+        		totalSubmittedCount+=difficulity;
         	        submitted = true;
         	    }
     		}
@@ -1792,6 +1880,12 @@ class BTCMiner implements MsgObj  {
 
 	if ( errorWeight[freqM]>20 )
 	    sb.append(",  hashRate=" + String.format("%.1f", hr )+"MH/s" );
+	    
+	try { 
+	    sb.append(", T=" + String.format("%.1f",ztex.tempSensorRead(fpgaNum)) + "°C");
+	}	    
+	catch ( Exception e ) {
+	}
 	    
 	sb.append(",  submitted " +submittedCount+" new nonces,  luckFactor=" + String.format("%.2f", submittedHashRate()/hr+0.0049 ));
 	submittedCount = 0;
@@ -2090,6 +2184,9 @@ class BTCMiner implements MsgObj  {
 		else if ( args[i].equals("-ep0") ) {
 		    forceEP0Config = true;
 		} 
+		else if ( args[i].equals("-tc") ) {
+		    targetCheck = true;
+		} 
 		else if ( args[i].equals("-h") ) {
 		        System.err.println(ParameterException.helpMsg);
 	    	        System.exit(0);
@@ -2112,6 +2209,16 @@ class BTCMiner implements MsgObj  {
 		    } 
 		    catch (Exception e) {
 		        throw new ParameterException("Number expected after -oh");
+		    }
+		}
+	        else if ( args[i].equals("-t") ) {
+	    	    i++;
+		    try {
+			if (i>=args.length) throw new Exception();
+    			tempLimit = Double.parseDouble( args[i] );
+		    } 
+		    catch (Exception e) {
+		        throw new ParameterException("Number expected after -t");
 		    }
 		}
 	        else if ( args[i].equals("-e") ) {
@@ -2168,7 +2275,7 @@ class BTCMiner implements MsgObj  {
 		    System.exit(0);
 		} 
 		if ( printBus ) {
-	    	    bus.printBus(System.out);
+	    	    printBus(bus);
 	    	    System.exit(0);
 		}
 		
@@ -2219,7 +2326,7 @@ class BTCMiner implements MsgObj  {
 		    System.exit(0);
 		} 
 		if ( printBus ) {
-	    	    bus.printBus(System.out);
+	    	    printBus(bus);
 	    	    System.exit(0);
 		}
 		if ( firmwareFile == null && !eraseFirmware )

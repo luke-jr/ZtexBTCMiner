@@ -1,6 +1,6 @@
 /*!
    BTCMiner -- BTCMiner for ZTEX USB-FPGA Modules
-   Copyright (C) 2011 ZTEX GmbH
+   Copyright (C) 2011-2012 ZTEX GmbH
    http://www.ztex.de
 
    This program is free software; you can redistribute it and/or modify
@@ -18,7 +18,8 @@
 
 /* TODO: 
  * HUP signal
- * difficulity > 1
+ * rollntime / expire oder strutm
+ * backup pool: priorität verändern, timeout einstellen
  */  
  
 
@@ -314,6 +315,26 @@ class BTCMinerThread extends Thread {
 	if ( pollLoop != null )
 	    pollLoop.printInfo( busName );
     }
+
+// ******* disconnect ***********************************************************
+    public int disconnect ( String ss, Vector<BTCMiner> allMiners ) {
+	int i=0;
+	synchronized ( miners ) {
+	    for (int j=miners.size()-1; j>=0; j-- ) {
+		BTCMiner m = miners.elementAt(j);
+		if ( ss.equals(m.ztex().dev().snString()) ) {
+		    BTCMiner.printMsg("Disconnecting "+m.name);
+		    if ( allMiners != null )
+			allMiners.removeElement(m);
+		    m.suspend();
+		    miners.removeElementAt(j);
+		    i+=1;
+		}
+	    }
+	}
+	return i;
+    }
+
 }
 
 
@@ -429,13 +450,31 @@ class BTCMinerCluster {
 		else if (cmd.equalsIgnoreCase("i") || cmd.equalsIgnoreCase("info") ) {
 		    nextInfoTime = 0;
 		}
+		else if ( cmd.charAt(0) == 'd' || cmd.charAt(0) == 'D' ) {
+		    int i = ( cmd.length()>=10 && cmd.substring(0,10).equalsIgnoreCase("disconnect") ) ? 10 : 1;
+		    while ( i<cmd.length() && cmd.charAt(i)<=' ' ) i++;
+		    int j = cmd.length()-1;
+		    while ( j>=i && cmd.charAt(j)<=' ' ) j--;
+		    if ( i<=j ) {
+			String ss=BTCMiner.checkSnString(cmd.substring(i,j+1));
+			j=0;
+			for ( i = threads.size()-1; i>=0; i-- )  {
+			    j+=threads.elementAt(i).disconnect(ss, allMiners);
+			}
+			System.out.println("Disconnected "+j+" miners");
+		    } 
+		    else {
+			System.out.println("No serial number specified");
+		    }
+		}
 		else if (cmd.equalsIgnoreCase("h") || cmd.equalsIgnoreCase("help") ) {
-		    System.out.println("q(uit)		 Exit BTCMiner");
-		    System.out.println("h(elp)	         Print this help");
-		    System.out.println("r(escan)         Rescan bus");
-		    System.out.println("c(ounter_reset)  Reset performance and error counters");
-		    System.out.println("s(uspend)        Suspend cluster");
-		    System.out.println("i(nfo)           Print cluster informations");
+		    System.out.println("q(uit)	                       Exit BTCMiner");
+		    System.out.println("r(escan)                       Rescan bus");
+		    System.out.println("c(ounter_reset)                Reset performance and error counters");
+		    System.out.println("s(uspend)                      Suspend cluster");
+		    System.out.println("d(isconnect) <serial nunmber>  Disconnect device");
+		    System.out.println("i(nfo)                         Print cluster informations");
+		    System.out.println("h(elp)	                       Print this help");
 		}
 		else System.out.println("Invalid command: `"+cmd+"', enter `h' for help");
 		    
@@ -884,6 +923,15 @@ class BTCMiner implements MsgObj  {
 	    throw new NumberFormatException("Invalid length of string");
 	for ( int i=0; i<buf.length; i++) {
 	    buf[i] = (byte) Integer.parseInt( str.substring(i*2,i*2+2), 16);
+	}
+    }
+
+// ******* hexStrToData2 ********************************************************
+    public static void hexStrToData2( String str, byte[] buf ) throws NumberFormatException {
+	if ( str.length()<buf.length*2 ) 
+	    throw new NumberFormatException("Invalid length of string");
+	for ( int i=0; i<buf.length; i++) {
+	    buf[i] = (byte) (Integer.parseInt( str.substring(i*2,i*2+1), 16) + Integer.parseInt( str.substring(i*2+1,i*2+2), 16)*16);
 	}
     }
 
@@ -1418,7 +1466,7 @@ class BTCMiner implements MsgObj  {
 
         // read response header
         String str = con.getHeaderField("X-Reject-Reason");
-        if( str != null && ! str.equals("") ) {
+        if( str != null && ! str.equals("") && ! str.equals("high-hash") && ! str.equals("stale-prevblk") && ! str.equals("duplicate") ) {
             msgObj.msg("Warning: Rejected block: " + str);
         } 
 
@@ -1601,15 +1649,16 @@ class BTCMiner implements MsgObj  {
     } 
 
 // ******* compareWithTarget ***************************************************
-    // returns true if smaller than target
+    // returns true if smaller than or equal to target
     public boolean compareWithTarget(int n) throws NumberFormatException {
 	intToData(n, dataBuf, 76);
 	sha256_transform( midstateBuf,0, dataBuf,64, hashBuf,0 );
 	sha256_transform( sha256_init_state,0, hashBuf,0, hashBuf,0 );
-	for ( int i=31; i>=0; i-- ) {
-	    if ( (hashBuf[i] & 255) < (targetBuf[i] & 255) )
+	for ( int i=0; i<32; i++ ) {
+	    int j=i+3-2*(i%4);
+	    if ( (hashBuf[31-j] & 255) < (targetBuf[31-i] & 255) )
 		return true;
-	    if ( (hashBuf[i] & 255) > (targetBuf[i] & 255) )
+	    if ( (hashBuf[31-j] & 255) > (targetBuf[31-i] & 255) )
 		return false;
 	}
 	return true;
@@ -1772,7 +1821,7 @@ class BTCMiner implements MsgObj  {
 	    errorRate[freqM] = errorCount[freqM] / errorWeight[freqM] * Math.min(1.0, errorWeight[freqM]*0.01) ;
     	    if ( errorRate[freqM] > maxErrorRate[freqM] )
     	        maxErrorRate[freqM] = errorRate[freqM];
-    	    if ( errorWeight[freqM] > 100 )
+    	    if ( errorWeight[freqM] > 120 )
     		maxHashRate = Math.max(maxHashRate, (freqM+1.0)*(1-errorRate[freqM]));
     	}
     	
